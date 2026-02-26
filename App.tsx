@@ -41,12 +41,21 @@ const App: React.FC = () => {
   // 🔁 Détection du sous-domaine pour forcer l'application cible
   useEffect(() => {
     const host = window.location.hostname;
+    console.log("🌐 hostname détecté :", host);
     if (host === 'admin.pharmaconnect-dj.com') {
+      console.log("👉 admin détecté");
       setSelectedApp(UserRole.ADMIN);
     } else if (host === 'shop.pharmaconnect-dj.com') {
+      console.log("👉 shop détecté");
       setSelectedApp(UserRole.PHARMACY);
+    } else if (host.includes('localhost') || host.includes('127.0.0.1')) {
+      console.log("👉 localhost, on garde le portail");
+      // rien
+    } else {
+      // Pour tous les autres domaines (pharmaconnect-dj.com, www.pharmaconnect-dj.com, l'URL temporaire Firebase, etc.)
+      console.log("👉 autre domaine, on force PATIENT");
+      setSelectedApp(UserRole.PATIENT);
     }
-    // Pour le domaine principal, on ne force rien (le portail s'affichera)
   }, []);
 
   // Charger les méthodes de paiement depuis Firestore
@@ -317,35 +326,37 @@ const App: React.FC = () => {
     );
   }
 
-  if (!selectedApp && !user) {
-    return <Portal onSelectApp={(role) => setSelectedApp(role)} />;
-  }
-
+  // Si l'utilisateur n'est pas connecté et qu'un rôle cible est défini (via le sous-domaine), on affiche la page de connexion adaptée
   if (!user) {
-    return (
-      <div className="relative">
-        <button 
-          onClick={() => setSelectedApp(null)}
-          className="fixed top-6 left-6 z-[100] flex items-center gap-2 px-4 py-2 bg-white border-2 border-slate-100 rounded-xl text-[10px] font-black uppercase text-slate-500 hover:text-blue-600 transition-all shadow-sm"
-        >
-          <i className="fa-solid fa-arrow-left"></i>
-          Retour au portail
-        </button>
-        <Auth 
-          targetRole={selectedApp || undefined} 
-          onAuthSuccess={(u, p) => { 
-            setUser(u); 
-            let profile = p;
-            if (u.email?.toLowerCase() === 'nassert93@gmail.com') {
-              profile = { ...p, role: UserRole.ADMIN, status: UserStatus.APPROVED };
-            }
-            setUserProfile(profile); 
-          }} 
-        />
-      </div>
-    );
+    if (selectedApp) {
+      return (
+        <div className="relative">
+          <button 
+            onClick={() => setSelectedApp(null)}
+            className="fixed top-6 left-6 z-[100] flex items-center gap-2 px-4 py-2 bg-white border-2 border-slate-100 rounded-xl text-[10px] font-black uppercase text-slate-500 hover:text-blue-600 transition-all shadow-sm"
+          >
+            <i className="fa-solid fa-arrow-left"></i>
+            Retour au portail
+          </button>
+          <Auth 
+            targetRole={selectedApp} 
+            onAuthSuccess={(u, p) => { 
+              setUser(u); 
+              let profile = p;
+              if (u.email?.toLowerCase() === 'nassert93@gmail.com') {
+                profile = { ...p, role: UserRole.ADMIN, status: UserStatus.APPROVED };
+              }
+              setUserProfile(profile); 
+            }} 
+          />
+        </div>
+      );
+    } else {
+      return <Portal onSelectApp={(role) => setSelectedApp(role)} />;
+    }
   }
 
+  // Gestion des statuts pending/rejected
   if (userProfile && userProfile.status === UserStatus.PENDING) {
     return (
       <div className="h-screen flex items-center justify-center bg-slate-50 p-6">
@@ -390,7 +401,9 @@ const App: React.FC = () => {
     );
   }
 
-  const role = userProfile?.role || (user?.email?.toLowerCase() === 'nassert93@gmail.com' ? UserRole.ADMIN : UserRole.PATIENT);
+  // Utilisateur connecté, on détermine le rôle à afficher
+  // Si un sous-domaine a forcé un rôle, on l'utilise en priorité, sinon on prend le rôle du profil
+  const effectiveRole = selectedApp || userProfile?.role || UserRole.PATIENT;
 
   return (
     <div className="h-screen flex flex-col bg-slate-50 overflow-hidden font-sans text-slate-900">
@@ -417,9 +430,9 @@ const App: React.FC = () => {
               ].map(({ r, icon, label }) => (
                 <button
                   key={r}
-                  onClick={() => setUserProfile(prev => prev ? { ...prev, role: r } : null)}
+                  onClick={() => setSelectedApp(r)}
                   className={`px-3 py-2 rounded-xl text-[8px] font-black uppercase transition-all flex items-center gap-2 ${
-                    role === r ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'
+                    effectiveRole === r ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'
                   }`}
                   title={label}
                 >
@@ -437,7 +450,7 @@ const App: React.FC = () => {
             >
               <p className="text-xs font-black text-slate-900 leading-none">{userProfile?.name || 'Utilisateur'}</p>
               <div className="flex items-center justify-end gap-2 mt-1">
-                <p className="text-[9px] font-black text-slate-400 uppercase">{role}</p>
+                <p className="text-[9px] font-black text-slate-400 uppercase">{userProfile?.role}</p>
                 {user.email?.toLowerCase() === 'nassert93@gmail.com' && (
                   <span className="text-[8px] bg-blue-600 text-white px-1.5 py-0.5 rounded font-black uppercase">Admin Verified</span>
                 )}
@@ -482,7 +495,7 @@ const App: React.FC = () => {
             onUpdate={(updated) => setUserProfile(updated)}
           />
         )}
-        {role === UserRole.PATIENT && (
+        {effectiveRole === UserRole.PATIENT && (
           <PatientApp
             t={t}
             onNewOrder={addOrder}
@@ -501,7 +514,7 @@ const App: React.FC = () => {
             }}
           />
         )}
-        {role === UserRole.PHARMACY && (
+        {effectiveRole === UserRole.PHARMACY && (
           <PharmacyApp
             t={t}
             orders={orders}
@@ -521,7 +534,7 @@ const App: React.FC = () => {
             }}
           />
         )}
-        {role === UserRole.DRIVER && (
+        {effectiveRole === UserRole.DRIVER && (
           <DriverApp 
             t={t} 
             orders={orders} 
@@ -533,7 +546,7 @@ const App: React.FC = () => {
             }}
           />
         )}
-        {role === UserRole.ADMIN && (
+        {effectiveRole === UserRole.ADMIN && (
           <AdminDashboard
             t={t}
             orders={orders}
@@ -549,7 +562,7 @@ const App: React.FC = () => {
             paymentMethods={paymentMethods}
             onUpdatePaymentMethods={handleUpdatePaymentMethods}
             users={allUsers}
-            onSwitchRole={(r) => setUserProfile(prev => prev ? { ...prev, role: r } : null)}
+            onSwitchRole={(r) => setSelectedApp(r)}
           />
         )}
       </main>
