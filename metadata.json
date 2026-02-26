@@ -1,0 +1,8 @@
+{
+  "name": "PharmaConnect - National Medical Hub",
+  "description": "A comprehensive healthcare platform centralizing prescriptions, pharmacy matching, secured delivery of non-restricted medicines, and real-time tracking for patients, pharmacists, and drivers.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ]
+}
