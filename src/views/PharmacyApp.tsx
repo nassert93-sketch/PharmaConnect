@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Order, OrderStatus, PrescriptionItem, UserProfile } from '@/types';
 import { MOCK_PHARMACIES } from '@/mockData';
 import { MOCK_MEDICINES, MedicineVariant } from '@/mockMedicines';
+import { runTransaction, doc } from 'firebase/firestore';
+import { db } from '@/firebase';
 
 const useSlaTimer = (deadline?: string) => {
   const [timeLeft, setTimeLeft] = useState<number>(0);
@@ -294,11 +296,13 @@ interface PharmacyAppProps {
   onSetCurrentPharmacy: (id: string) => void;
   user: UserProfile;
   users: UserProfile[];
+  addNotification: (message: string, type?: 'info' | 'urgent') => void;
 }
 
 const PharmacyApp: React.FC<PharmacyAppProps> = ({ 
   t, orders, onUpdateOrder, drafts, onUpdateDraft, onAcceptOrder, onRefuseOrder,
-  currentPharmacyId, onSetCurrentPharmacy, onToggleStatus, onlineStatus, user, users
+  currentPharmacyId, onSetCurrentPharmacy, onToggleStatus, onlineStatus, user, users,
+  addNotification
 }) => {
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -331,6 +335,7 @@ const PharmacyApp: React.FC<PharmacyAppProps> = ({
 
   const currentOrder = orders.find(o => o.id === selectedOrderId);
   const isAcceptedByMe = currentOrder?.pharmacyId === currentPharmacyId;
+  const hasAccepted = currentOrder?.acceptedByPharmacyIds?.includes(currentPharmacyId);
   const sentQuote = currentOrder?.quotes?.find(q => q.pharmacyId === currentPharmacyId);
   
   const rawSla = useSlaTimer(currentOrder?.deadline);
@@ -414,7 +419,7 @@ const PharmacyApp: React.FC<PharmacyAppProps> = ({
     onUpdateDraft(currentOrder.id, currentPharmacyId, newLines);
   };
 
-  const sendQuote = () => {
+  const sendQuote = async () => {
     if (!currentOrder || isSending) return;
     const items = getItems(currentOrder);
     
@@ -438,19 +443,68 @@ const PharmacyApp: React.FC<PharmacyAppProps> = ({
     setIsSending(true);
     const total = items.reduce((s, i) => i.status !== 'UNAVAILABLE' ? s + ((i.price || 0) * (i.quantity || 1)) : s, 0);
     
-    onUpdateOrder(currentOrder.id, { 
-      quotes: [...(currentOrder.quotes || []), { 
-        pharmacyId: currentPharmacyId, 
-        pharmacyName: MOCK_PHARMACIES.find(p => p.id === currentPharmacyId)?.name || currentPharmacyId, 
-        items, 
-        totalAmount: total, 
-        deliveryFee: 500, 
-        estimatedTime: 15 
-      }] 
-    });
-    setValidationError(null);
-    setSelectedOrderId(null);
-    setIsSending(false);
+    const allAvailable = items.every(item => item.status === 'AVAILABLE');
+    const pharmacyName = MOCK_PHARMACIES.find(p => p.id === currentPharmacyId)?.name || currentPharmacyId;
+
+    // Si c'est un mode broadcast ET que tous les produits sont disponibles
+    if (currentOrder.routingMode === 'broadcast' && allAvailable) {
+      try {
+        await runTransaction(db, async (transaction) => {
+          const orderRef = doc(db, 'orders', currentOrder.id);
+          const orderSnap = await transaction.get(orderRef);
+          if (!orderSnap.exists()) throw new Error('Commande introuvable');
+          const order = orderSnap.data() as Order;
+
+          // Vérifier que la commande est toujours disponible (pas déjà attribuée)
+          if (order.status !== OrderStatus.AWAITING_QUOTES || order.pharmacyId) {
+            throw new Error('Cette commande a déjà été prise par une autre pharmacie.');
+          }
+
+          // Mettre à jour la commande : verrouiller et passer en préparation
+          transaction.update(orderRef, {
+            status: OrderStatus.PREPARING,
+            pharmacyId: currentPharmacyId,
+            pharmacyName,
+            totalAmount: total,
+            deliveryFee: 500,
+            items: items,
+            quotes: [...(order.quotes || []), {
+              pharmacyId: currentPharmacyId,
+              pharmacyName,
+              items,
+              totalAmount: total,
+              deliveryFee: 500,
+              estimatedTime: 15
+            }],
+            // Retirer la commande des autres pharmacies
+            targetedPharmacyIds: [],
+          });
+        });
+        setValidationError(null);
+        setSelectedOrderId(null);
+        addNotification('✅ Devis accepté – commande verrouillée', 'info');
+      } catch (error) {
+        console.error('Transaction failed:', error);
+        setValidationError('La commande a déjà été prise par une autre pharmacie.');
+      } finally {
+        setIsSending(false);
+      }
+    } else {
+      // Mode round-robin ou broadcast avec disponibilité partielle : on ajoute simplement le devis
+      onUpdateOrder(currentOrder.id, {
+        quotes: [...(currentOrder.quotes || []), {
+          pharmacyId: currentPharmacyId,
+          pharmacyName,
+          items,
+          totalAmount: total,
+          deliveryFee: 500,
+          estimatedTime: 15
+        }]
+      });
+      setValidationError(null);
+      setSelectedOrderId(null);
+      setIsSending(false);
+    }
   };
 
   const groupedItems = useMemo(() => {
@@ -575,7 +629,12 @@ const PharmacyApp: React.FC<PharmacyAppProps> = ({
                 </div>
 
                 <div ref={modalContentRef} className="flex-1 overflow-y-auto p-6">
-                  {!isAcceptedByMe && currentOrder.status === OrderStatus.AWAITING_QUOTES ? (
+                  {currentOrder.pharmacyId && currentOrder.pharmacyId !== currentPharmacyId ? (
+                    <div className="flex flex-col items-center justify-center py-10">
+                      <p className="text-lg font-black mb-4 text-red-600">Commande déjà attribuée</p>
+                      <p className="text-sm text-slate-500 text-center">Cette commande a été prise par une autre pharmacie.</p>
+                    </div>
+                  ) : !isAcceptedByMe && !hasAccepted && currentOrder.status === OrderStatus.AWAITING_QUOTES ? (
                     <div className="flex flex-col items-center justify-center py-10">
                       <p className="text-lg font-black mb-8">Nouvelle mission</p>
                       <p className="text-sm text-slate-500 mb-8 text-center">Acceptez pour saisir le devis et verrouiller la mission.</p>
@@ -584,7 +643,7 @@ const PharmacyApp: React.FC<PharmacyAppProps> = ({
                         <button onClick={() => handleRefuse(currentOrder.id)} className="px-8 py-4 bg-red-50 text-red-600 rounded-xl font-black border border-red-200">Refuser</button>
                       </div>
                     </div>
-                  ) : isAcceptedByMe ? (
+                  ) : (isAcceptedByMe || hasAccepted) ? (
                     <>
                       <div className="flex justify-between items-center mb-4">
                         <h4 className="font-black text-xs text-slate-400">Articles ({currentItems.length})</h4>
