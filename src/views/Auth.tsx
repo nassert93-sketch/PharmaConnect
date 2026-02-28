@@ -4,7 +4,9 @@ import {
   createUserWithEmailAndPassword,
   updateProfile,
   sendEmailVerification,
-  sendPasswordResetEmail
+  sendPasswordResetEmail,
+  GoogleAuthProvider,
+  signInWithPopup
 } from 'firebase/auth';
 import { doc, setDoc, getDoc, query, collection, where, getDocs } from 'firebase/firestore';
 import { auth, db } from '@/firebase';
@@ -249,11 +251,50 @@ const Auth: React.FC<AuthProps> = ({ onAuthSuccess, targetRole }) => {
     }
   };
 
+  const handleGoogleSignIn = async () => {
+    setError('');
+    setLoading(true);
+    try {
+      const provider = new GoogleAuthProvider();
+      const result = await signInWithPopup(auth, provider);
+      const user = result.user;
+
+      const docRef = doc(db, 'users', user.uid);
+      const docSnap = await getDoc(docRef);
+
+      if (!docSnap.exists()) {
+        const newProfile: any = {
+          uid: user.uid,
+          name: user.displayName || 'Utilisateur',
+          email: user.email || '',
+          phone: '',
+          role: UserRole.PATIENT,
+          status: UserStatus.APPROVED,
+          createdAt: new Date().toISOString(),
+          photoURL: user.photoURL || null,
+        };
+        await setDoc(docRef, newProfile);
+        onAuthSuccess(user, newProfile);
+      } else {
+        const profile = docSnap.data() as any;
+        onAuthSuccess(user, profile);
+      }
+    } catch (err: any) {
+      console.error('Google sign-in error:', err);
+      if (err.code === 'auth/account-exists-with-different-credential') {
+        setError('Un compte existe déjà avec cet email. Veuillez vous connecter avec votre mot de passe.');
+      } else {
+        setError('Erreur lors de la connexion avec Google.');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-start sm:justify-center p-4 sm:p-8 font-sans">
       <div className="bg-white w-full max-w-md rounded-3xl shadow-xl overflow-hidden border border-slate-100 my-8 sm:my-auto">
         <div className="bg-gradient-to-br from-blue-600 to-indigo-700 p-8 text-center">
-          {/* Logo PharmaConnect */}
           <img 
             src="/logo.png" 
             alt="PharmaConnect Logo" 
@@ -633,6 +674,27 @@ const Auth: React.FC<AuthProps> = ({ onAuthSuccess, targetRole }) => {
                   )}
                 </button>
               </form>
+
+              {isLogin && (
+                <>
+                  <div className="relative my-6">
+                    <div className="absolute inset-0 flex items-center">
+                      <div className="w-full border-t border-slate-200"></div>
+                    </div>
+                    <div className="relative flex justify-center text-xs">
+                      <span className="bg-white px-4 text-slate-400 font-black uppercase">Ou</span>
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleGoogleSignIn}
+                    disabled={loading}
+                    className="w-full py-4 bg-white border-2 border-slate-200 text-slate-700 rounded-xl font-black uppercase text-sm tracking-widest hover:bg-slate-50 transition-all flex items-center justify-center gap-3 disabled:opacity-50"
+                  >
+                    <i className="fa-brands fa-google text-lg"></i>
+                    Se connecter avec Google
+                  </button>
+                </>
+              )}
             </>
           )}
         </div>
