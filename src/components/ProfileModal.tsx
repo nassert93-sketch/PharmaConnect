@@ -12,8 +12,10 @@ interface ProfileModalProps {
 const ProfileModal: React.FC<ProfileModalProps> = ({ profile, onClose, onUpdate }) => {
   const [name, setName] = useState(profile.name);
   const [phone, setPhone] = useState(profile.phone);
+  const [soundEnabled, setSoundEnabled] = useState(profile.soundEnabled || false);
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [error, setError] = useState('');
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -21,14 +23,16 @@ const ProfileModal: React.FC<ProfileModalProps> = ({ profile, onClose, onUpdate 
     try {
       await updateDoc(doc(db, 'users', profile.uid), {
         name,
-        phone
+        phone,
+        soundEnabled
       });
-      onUpdate({ ...profile, name, phone });
+      onUpdate({ ...profile, name, phone, soundEnabled });
       setSuccess(true);
+      setError('');
       setTimeout(() => setSuccess(false), 3000);
     } catch (error) {
       console.error("Error updating profile:", error);
-      alert("Erreur lors de la mise à jour du profil");
+      setError("Erreur lors de la mise à jour du profil. Veuillez réessayer.");
     } finally {
       setLoading(false);
     }
@@ -96,6 +100,18 @@ const ProfileModal: React.FC<ProfileModalProps> = ({ profile, onClose, onUpdate 
               </div>
             </div>
 
+            {/* Toggle pour les notifications sonores */}
+            <div className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-200">
+              <span className="text-[10px] font-black uppercase text-slate-600">Notifications sonores</span>
+              <button
+                type="button"
+                onClick={() => setSoundEnabled(!soundEnabled)}
+                className={`w-12 h-6 rounded-full relative transition-all duration-300 ${soundEnabled ? 'bg-blue-600' : 'bg-slate-300'}`}
+              >
+                <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all duration-300 ${soundEnabled ? 'left-7' : 'left-1'}`} />
+              </button>
+            </div>
+
             {profile.role === UserRole.PHARMACY && (
               <div>
                 <label className="block text-[10px] font-black uppercase text-slate-400 mb-1 ml-1">Pharmacie</label>
@@ -119,6 +135,13 @@ const ProfileModal: React.FC<ProfileModalProps> = ({ profile, onClose, onUpdate 
             <div className="bg-emerald-50 text-emerald-600 text-[10px] font-black p-3 rounded-xl flex items-center gap-2 border border-emerald-100">
               <i className="fa-solid fa-circle-check"></i>
               PROFIL MIS À JOUR AVEC SUCCÈS
+            </div>
+          )}
+
+          {error && (
+            <div className="bg-red-50 text-red-600 text-[10px] font-black p-3 rounded-xl flex items-center gap-2 border border-red-100">
+              <i className="fa-solid fa-circle-exclamation"></i>
+              {error}
             </div>
           )}
 

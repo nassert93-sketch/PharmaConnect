@@ -1,4 +1,4 @@
-// ==================== types.ts ====================
+// ==================== src/types.ts ====================
 export enum UserRole {
   PATIENT = 'PATIENT',
   PHARMACY = 'PHARMACY',
@@ -14,7 +14,7 @@ export enum UserStatus {
 
 export interface UserProfile {
   uid: string;
-  name: string; // Patient: Nom complet, Pharmacie: Nom du responsable, Livreur: Nom complet
+  name: string;
   email: string;
   phone: string;
   photoURL?: string;
@@ -28,6 +28,19 @@ export interface UserProfile {
   // Champs spécifiques Livreur
   vehicleType?: string;
   vehiclePlate?: string;
+  // Coordonnées GPS (optionnel)
+  location?: {
+    lat: number;
+    lng: number;
+    updatedAt?: string;
+  };
+  // Préférence notifications sonores
+  soundEnabled?: boolean;
+  // Pharmacie de garde
+  isOnDuty?: boolean;
+  dutyNote?: string;          // note optionnelle ex: "Garde de nuit jusqu'à 6h"
+  // Horaires d'ouverture
+  openingHours?: OpeningHours;
 }
 
 export enum OrderStatus {
@@ -56,18 +69,21 @@ export interface PrescriptionItem {
 export interface Quote {
   pharmacyId: string;
   pharmacyName: string;
+  pharmacyAddress?: string;
   items: PrescriptionItem[];
   totalAmount: number;
   deliveryFee: number;
   estimatedTime: number;
-  isDeliveryBlocked?: boolean; 
+  isDeliveryBlocked?: boolean;
+  isOnDuty?: boolean;         // pharmacie de garde au moment du devis
+  isOpenNow?: boolean;        // pharmacie ouverte au moment du devis
 }
 
 export interface Order {
   id: string;
   patientId: string;
   patientName: string;
-  pharmacyId?: string;
+  pharmacyId?: string | null;
   pharmacyName?: string;
   driverId?: string;
   status: OrderStatus;
@@ -83,8 +99,19 @@ export interface Order {
   acceptedByPharmacyIds: string[];
   prescriptionImageUrl?: string;
   deadline?: string;
-  paymentMethod?: string;      // code du mode de paiement choisi
-  paymentType?: 'online' | 'cod'; // type de paiement
+  paymentMethod?: string;
+  paymentType?: 'online' | 'cod';
+  routingMode?: 'round-robin' | 'broadcast';
+  patientLocation?: {
+    lat: number;
+    lng: number;
+  };
+  driverLocation?: {
+    lat: number;
+    lng: number;
+    updatedAt?: string;
+  };
+  pharmacyAddress?: string;  // adresse de la pharmacie pour le livreur
 }
 
 export interface Pharmacy {
@@ -96,14 +123,55 @@ export interface Pharmacy {
   stockLevel: number;
   rating: number;
   prices: Record<string, number>;
+  lat?: number;
+  lng?: number;
 }
 
 export interface PaymentMethod {
   id: string;
   name: string;
-  icon: string;      // classe FontAwesome (ex: 'fa-wallet') ou URL si logo présent
-  code: string;      // identifiant interne (ex: 'waafi', 'cod')
+  icon: string;
+  code: string;
   active: boolean;
-  logo?: string;     // URL optionnelle pour un logo personnalisé
+  logo?: string;
   type: 'online' | 'cod';
+}
+
+// ─── Horaires d'ouverture ─────────────────────────────────────────────────────
+export interface DaySchedule {
+  closed: boolean;
+  open: string;   // format "08:00"
+  close: string;  // format "20:00"
+}
+
+export interface OpeningHours {
+  monday:    DaySchedule;
+  tuesday:   DaySchedule;
+  wednesday: DaySchedule;
+  thursday:  DaySchedule;
+  friday:    DaySchedule;
+  saturday:  DaySchedule;
+  sunday:    DaySchedule;
+}
+
+// ─── Notification interne (pharmacie / livreur) ───────────────────────────────
+export interface PushNotification {
+  id?: string;
+  targetUid?: string;        // UID spécifique (pharmacie)
+  targetRole?: string;       // 'DRIVER' pour tous les livreurs
+  type: 'ORDER_CONFIRMED' | 'PICKUP_READY' | 'ORDER_ASSIGNED';
+  title: string;
+  message: string;
+  orderId: string;
+  pharmacyName?: string;
+  pharmacyAddress?: string;
+  patientName?: string;
+  totalAmount?: number;
+  read: boolean;
+  createdAt: string;
+}
+
+export interface RoutingConfig {
+  mode: 'round-robin' | 'broadcast';
+  broadcastCount: number;
 }

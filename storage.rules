@@ -1,0 +1,24 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // Ordonnances — chaque patient peut uploader/lire ses propres ordonnances
+    // Les pharmacies et l'admin peuvent lire toutes les ordonnances
+    match /prescriptions/{patientId}/{fileName} {
+
+      // Upload : seulement le patient propriétaire, fichier image max 10MB
+      allow write: if request.auth != null
+                   && request.auth.uid == patientId
+                   && request.resource.size <= 10 * 1024 * 1024
+                   && request.resource.contentType.matches('image/.*');
+
+      // Lecture : le patient propriétaire, ou tout utilisateur authentifié (pharmacie/admin)
+      allow read: if request.auth != null;
+    }
+
+    // Interdire tout le reste
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

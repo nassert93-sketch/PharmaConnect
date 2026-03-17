@@ -1,6 +1,11 @@
 import React, { useRef, useState, useMemo, useEffect } from 'react';
+import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
+import { storage } from '@/firebase';
 import { OrderStatus, Order, Quote, PaymentMethod } from '@/types';
+import MapView from '@/components/MapView';
+import { useSoundReminder } from '@/hooks/useSoundReminder';
 
+// ==================== HOOK PERSONNALISÉ ====================
 const useTimer = (deadline: string) => {
   const [timeLeft, setTimeLeft] = useState<number>(0);
   useEffect(() => {
@@ -17,6 +22,7 @@ const useTimer = (deadline: string) => {
   return { text: `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`, raw: timeLeft };
 };
 
+// ==================== COMPOSANTS DE STEPPER ====================
 const OrderStepper = ({ status }: { status: OrderStatus }) => {
   const steps = [
     { id: OrderStatus.AWAITING_QUOTES, icon: 'fa-search', label: 'Recherche' },
@@ -90,11 +96,12 @@ const CompactStepper = ({ status }: { status: OrderStatus }) => {
   );
 };
 
+// ==================== CARTES DE COMMANDE ====================
 const DesktopOrderCard = ({ order, onClick, t }: { order: Order; onClick: (id: string) => void; t: any }) => {
   const timerResult = useTimer(order.deadline || new Date().toISOString());
   const timer = order.status === OrderStatus.AWAITING_QUOTES && !order.pharmacyId ? timerResult : null;
   
-  const statusColors = {
+  const statusColors: Record<OrderStatus, string> = {
     [OrderStatus.AWAITING_QUOTES]: 'bg-amber-100 text-amber-700 border-amber-200',
     [OrderStatus.PREPARING]: 'bg-blue-100 text-blue-700 border-blue-200',
     [OrderStatus.READY_FOR_PICKUP]: 'bg-emerald-100 text-emerald-700 border-emerald-200',
@@ -102,14 +109,22 @@ const DesktopOrderCard = ({ order, onClick, t }: { order: Order; onClick: (id: s
     [OrderStatus.DELIVERED]: 'bg-gray-100 text-gray-700 border-gray-200',
     [OrderStatus.CANCELLED]: 'bg-red-100 text-red-700 border-red-200',
   };
-  const statusText = {
-    [OrderStatus.AWAITING_QUOTES]: 'En attente de devis',
-    [OrderStatus.PREPARING]: 'Préparation',
-    [OrderStatus.READY_FOR_PICKUP]: 'Prêt',
-    [OrderStatus.OUT_FOR_DELIVERY]: 'Livraison',
-    [OrderStatus.DELIVERED]: 'Livré',
-    [OrderStatus.CANCELLED]: 'Annulé',
+  const statusText: Record<OrderStatus, string> = {
+    [OrderStatus.AWAITING_QUOTES]: 'EN ATTENTE',
+    [OrderStatus.PREPARING]: 'EN PRÉPARATION',
+    [OrderStatus.READY_FOR_PICKUP]: 'PRÊT',
+    [OrderStatus.OUT_FOR_DELIVERY]: 'EN COURS DE LIVRAISON',
+    [OrderStatus.DELIVERED]: 'LIVRÉ',
+    [OrderStatus.CANCELLED]: 'ANNULÉ',
   };
+
+  const formattedDate = new Date(order.timestamp).toLocaleDateString('fr-FR', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric'
+  });
+
+  const displayName = order.pharmacyName || order.patientName;
 
   return (
     <div
@@ -119,7 +134,8 @@ const DesktopOrderCard = ({ order, onClick, t }: { order: Order; onClick: (id: s
       <div className="flex justify-between items-start mb-4">
         <div>
           <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">{order.id}</p>
-          <h3 className="text-xl font-black text-gray-900 mt-1">{order.patientName}</h3>
+          <h3 className="text-xl font-black text-gray-900 mt-1">{displayName}</h3>
+          <p className="text-sm text-gray-500 mt-1">{formattedDate}</p>
         </div>
         <div className="flex flex-col items-end gap-2">
           <span className={`text-xs font-black px-3 py-1 rounded-full border ${statusColors[order.status] || 'bg-gray-100'}`}>
@@ -153,7 +169,7 @@ const CompactOrderCard = ({ order, onClick, t }: { order: Order; onClick: (id: s
   const timerResult = useTimer(order.deadline || new Date().toISOString());
   const timer = order.status === OrderStatus.AWAITING_QUOTES && !order.pharmacyId ? timerResult : null;
   
-  const statusColors = {
+  const statusColors: Record<OrderStatus, string> = {
     [OrderStatus.AWAITING_QUOTES]: 'bg-amber-100 text-amber-700 border-amber-200',
     [OrderStatus.PREPARING]: 'bg-blue-100 text-blue-700 border-blue-200',
     [OrderStatus.READY_FOR_PICKUP]: 'bg-emerald-100 text-emerald-700 border-emerald-200',
@@ -161,14 +177,22 @@ const CompactOrderCard = ({ order, onClick, t }: { order: Order; onClick: (id: s
     [OrderStatus.DELIVERED]: 'bg-gray-100 text-gray-700 border-gray-200',
     [OrderStatus.CANCELLED]: 'bg-red-100 text-red-700 border-red-200',
   };
-  const statusText = {
-    [OrderStatus.AWAITING_QUOTES]: 'Devis en attente',
-    [OrderStatus.PREPARING]: 'Préparation',
-    [OrderStatus.READY_FOR_PICKUP]: 'Prêt',
-    [OrderStatus.OUT_FOR_DELIVERY]: 'Livraison',
-    [OrderStatus.DELIVERED]: 'Livré',
-    [OrderStatus.CANCELLED]: 'Annulé',
+  const statusText: Record<OrderStatus, string> = {
+    [OrderStatus.AWAITING_QUOTES]: 'EN ATTENTE',
+    [OrderStatus.PREPARING]: 'EN PRÉPARATION',
+    [OrderStatus.READY_FOR_PICKUP]: 'PRÊT',
+    [OrderStatus.OUT_FOR_DELIVERY]: 'EN COURS DE LIVRAISON',
+    [OrderStatus.DELIVERED]: 'LIVRÉ',
+    [OrderStatus.CANCELLED]: 'ANNULÉ',
   };
+
+  const formattedDate = new Date(order.timestamp).toLocaleDateString('fr-FR', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric'
+  });
+
+  const displayName = order.pharmacyName || order.patientName;
 
   return (
     <div
@@ -178,12 +202,15 @@ const CompactOrderCard = ({ order, onClick, t }: { order: Order; onClick: (id: s
       <div className="flex justify-between items-start mb-2">
         <div>
           <p className="text-xs font-medium text-gray-400 uppercase">{order.id}</p>
-          <h4 className="text-base font-black text-gray-900 mt-0.5">{order.patientName}</h4>
+          <h4 className="text-base font-black text-gray-900 mt-0.5">{displayName}</h4>
         </div>
         <span className={`text-[9px] font-black px-2 py-1 rounded-full border ${statusColors[order.status] || 'bg-gray-100'}`}>
           {statusText[order.status] || order.status}
         </span>
       </div>
+      
+      <p className="text-xs text-gray-500 mb-2">{formattedDate}</p>
+
       <div className="flex items-center justify-between mt-3">
         {order.status !== OrderStatus.CANCELLED ? (
           <CompactStepper status={order.status} />
@@ -207,40 +234,63 @@ const CompactOrderCard = ({ order, onClick, t }: { order: Order; onClick: (id: s
   );
 };
 
+// ==================== DÉTAILS D'UN DEVIS ====================
 const QuoteDetails = ({ quote, t }: { quote: Quote; t: any }) => {
   const totalArticles = quote.items.reduce((sum, item) => sum + (item.price || 0) * (item.quantity || 1), 0);
   return (
-    <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-md space-y-4">
-      <div className="flex justify-between items-center border-b border-gray-100 pb-4">
+    <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm space-y-3">
+      <div className="flex justify-between items-center border-b border-gray-100 pb-3">
         <div>
-          <p className="text-xs font-black text-blue-600 uppercase">Offre #{quote.pharmacyId.slice(-4)}</p>
-          <p className="text-sm text-gray-500">{quote.pharmacyName}</p>
+          <p className="text-[10px] font-black text-blue-600 uppercase">Offre #{quote.pharmacyId.slice(-4)}</p>
+          <p className="text-sm font-black text-gray-900 mt-0.5">{quote.pharmacyName}</p>
+          {quote.pharmacyAddress && (
+            <p className="text-[9px] text-gray-400 mt-0.5">
+              <i className="fa-solid fa-location-dot mr-1"></i>{quote.pharmacyAddress}
+            </p>
+          )}
+          <div className="flex gap-1 mt-1.5 flex-wrap">
+            {quote.isOnDuty && (
+              <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded-full text-[9px] font-black flex items-center gap-1">
+                <i className="fa-solid fa-moon text-[8px]"></i> DE GARDE
+              </span>
+            )}
+            {quote.isOpenNow === true && (
+              <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-full text-[9px] font-black flex items-center gap-1">
+                <i className="fa-solid fa-circle text-[6px]"></i> OUVERT
+              </span>
+            )}
+            {quote.isOpenNow === false && (
+              <span className="px-2 py-0.5 bg-red-100 text-red-600 rounded-full text-[9px] font-black">
+                FERMÉ
+              </span>
+            )}
+          </div>
         </div>
         <div className="text-right">
-          <p className="text-2xl font-black text-gray-900">{quote.totalAmount.toLocaleString()} <span className="text-xs font-black text-gray-400">DJF</span></p>
-          <p className="text-[8px] font-black text-gray-400 uppercase">dont livraison {quote.deliveryFee} DJF</p>
+          <p className="text-xl font-black text-gray-900">{quote.totalAmount.toLocaleString()} <span className="text-[8px] font-black text-gray-400">DJF</span></p>
+          <p className="text-[7px] font-black text-gray-400 uppercase">dont livraison {quote.deliveryFee} DJF</p>
         </div>
       </div>
-      <div className="space-y-3">
-        <h4 className="text-[8px] font-black uppercase text-gray-400 tracking-wider">Détail des produits</h4>
+      <div className="space-y-2 max-h-60 overflow-y-auto">
+        <h4 className="text-[7px] font-black uppercase text-gray-400 tracking-wider">Détail des produits</h4>
         {quote.items.map((item, idx) => (
           <div key={idx} className="flex justify-between items-center border-b border-gray-50 pb-2 last:border-0">
             <div className="flex-1">
               <p className="text-xs font-black text-gray-900">{item.name}</p>
-              <div className="flex items-center gap-1 mt-1">
-                {item.isColdChain && <span className="px-1 py-0.5 bg-blue-100 text-blue-600 rounded text-[7px] font-black">❄️ Froid</span>}
-                {item.isPsychotropic && <span className="px-1 py-0.5 bg-amber-100 text-amber-600 rounded text-[7px] font-black">⚠️ Psycho</span>}
-                {item.status === 'GENERIC_AVAILABLE' && <span className="px-1 py-0.5 bg-emerald-100 text-emerald-600 rounded text-[7px] font-black">🔄 Générique</span>}
+              <div className="flex items-center gap-1 mt-1 flex-wrap">
+                {item.isColdChain && <span className="px-1 py-0.5 bg-blue-100 text-blue-600 rounded text-[6px] font-black">❄️ Froid</span>}
+                {item.isPsychotropic && <span className="px-1 py-0.5 bg-amber-100 text-amber-600 rounded text-[6px] font-black">⚠️ Psycho</span>}
+                {item.status === 'GENERIC_AVAILABLE' && <span className="px-1 py-0.5 bg-emerald-100 text-emerald-600 rounded text-[6px] font-black">🔄 Générique</span>}
               </div>
             </div>
             <div className="text-right">
               <p className="text-xs font-black text-gray-900">{item.price?.toLocaleString()} DJF</p>
-              <p className="text-[8px] text-gray-400">x {item.quantity}</p>
+              <p className="text-[7px] text-gray-400">x {item.quantity}</p>
             </div>
           </div>
         ))}
       </div>
-      <div className="pt-2 flex justify-between items-center text-sm font-black">
+      <div className="pt-2 flex justify-between items-center text-sm font-black border-t border-gray-100">
         <span className="text-xs text-gray-500">Total TTC</span>
         <span className="text-blue-600">{(totalArticles + quote.deliveryFee).toLocaleString()} DJF</span>
       </div>
@@ -248,60 +298,389 @@ const QuoteDetails = ({ quote, t }: { quote: Quote; t: any }) => {
   );
 };
 
+// ==================== ÉCRANS POUR CHAQUE ONGLET ====================
+
+// Onglet Accueil
+const HomeTab: React.FC<{
+  user: any;
+  pendingOrders: Order[];
+  inProgressOrders: Order[];
+  onUpload: () => void;
+  isUploading: boolean;
+  uploadProgress: number;
+  onOrderClick: (id: string) => void;
+  t: any;
+}> = ({ user, pendingOrders, inProgressOrders, onUpload, isUploading, uploadProgress, onOrderClick, t }) => {
+  const displayOrders = [...pendingOrders, ...inProgressOrders].slice(0, 3);
+
+  return (
+    <div className="p-4 space-y-6">
+      <div>
+        <h1 className="text-2xl font-black text-gray-900">
+          Bonjour, {user?.name?.split(' ')[0] || 'cher patient'}
+        </h1>
+        <p className="text-sm text-gray-500 mt-1">
+          Envoyez votre ordonnance aux pharmacies proches de vous
+        </p>
+      </div>
+
+      <button
+        onClick={onUpload}
+        disabled={isUploading}
+        className="w-full py-6 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-2xl font-black uppercase text-lg tracking-wider shadow-xl hover:shadow-2xl active:scale-[0.98] transition-all flex items-center justify-center gap-4 disabled:opacity-50"
+      >
+        {isUploading ? (
+          <div className="w-full flex flex-col items-center gap-2">
+            <div className="flex items-center gap-3">
+              <i className="fa-solid fa-cloud-arrow-up fa-spin text-xl"></i>
+              <span className="text-sm font-bold">Envoi en cours... {uploadProgress}%</span>
+            </div>
+            <div className="w-full bg-white/30 rounded-full h-2">
+              <div
+                className="bg-white rounded-full h-2 transition-all duration-300"
+                style={{width: `${uploadProgress}%`}}
+              ></div>
+            </div>
+          </div>
+        ) : (
+          <>
+            <i className="fa-solid fa-camera text-2xl"></i>
+            <span>Scanner une ordonnance</span>
+          </>
+        )}
+      </button>
+
+      {displayOrders.length > 0 && (
+        <section>
+          <h2 className="text-lg font-black text-gray-800 mb-3 flex items-center gap-2">
+            <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
+            Commandes en cours ({displayOrders.length})
+          </h2>
+          <div className="space-y-3">
+            {displayOrders.map(order => (
+              <CompactOrderCard key={order.id} order={order} onClick={onOrderClick} t={t} />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {displayOrders.length === 0 && (
+        <div className="py-12 text-center bg-gray-50 rounded-2xl border-2 border-dashed border-gray-200">
+          <i className="fa-solid fa-prescription text-4xl text-gray-300 mb-3"></i>
+          <p className="text-gray-500 font-medium">Aucune commande en cours</p>
+          <p className="text-sm text-gray-400 mt-1">
+            Scannez votre première ordonnance pour commencer
+          </p>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Onglet Historique
+const HistoryTab: React.FC<{
+  orders: Order[];
+  onOrderClick: (id: string) => void;
+  t: any;
+}> = ({ orders, onOrderClick, t }) => {
+  const pendingOrders = orders.filter(o => o.status === OrderStatus.AWAITING_QUOTES);
+  const processedOrders = orders.filter(o => o.status !== OrderStatus.AWAITING_QUOTES);
+
+  const sortByDate = (a: Order, b: Order) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
+  const sortedPending = [...pendingOrders].sort(sortByDate);
+  const sortedProcessed = [...processedOrders].sort(sortByDate);
+
+  if (orders.length === 0) {
+    return (
+      <div className="p-8 text-center">
+        <i className="fa-solid fa-clock-rotate-left text-5xl text-gray-300 mb-4"></i>
+        <p className="text-gray-500">Aucun historique</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-4 space-y-6">
+      {sortedPending.length > 0 && (
+        <section>
+          <h3 className="text-sm font-black text-gray-700 uppercase tracking-wider mb-3 flex items-center gap-2">
+            <span className="w-2 h-2 bg-amber-500 rounded-full"></span>
+            Commandes en attente ({sortedPending.length})
+          </h3>
+          <div className="space-y-3">
+            {sortedPending.map(order => (
+              <CompactOrderCard key={order.id} order={order} onClick={onOrderClick} t={t} />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {sortedProcessed.length > 0 && (
+        <section>
+          <h3 className="text-sm font-black text-gray-700 uppercase tracking-wider mb-3 flex items-center gap-2">
+            <span className="w-2 h-2 bg-emerald-500 rounded-full"></span>
+            Ordonnances traitées ({sortedProcessed.length})
+          </h3>
+          <div className="space-y-3">
+            {sortedProcessed.map(order => (
+              <CompactOrderCard key={order.id} order={order} onClick={onOrderClick} t={t} />
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+};
+
+// Onglet Notifications
+const NotificationsTab: React.FC<{
+  notifications: Array<{ id: string; message: string; type: string; timestamp: Date }>;
+}> = ({ notifications }) => {
+  if (notifications.length === 0) {
+    return (
+      <div className="p-8 text-center">
+        <i className="fa-solid fa-bell-slash text-5xl text-gray-300 mb-4"></i>
+        <p className="text-gray-500">Aucune notification</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-4 space-y-2">
+      {notifications.map(n => (
+        <div key={n.id} className="p-4 bg-white rounded-xl border border-gray-100 shadow-sm">
+          <p className="text-sm text-gray-800">{n.message}</p>
+          <p className="text-[10px] text-gray-400 mt-1">
+            {n.timestamp.toLocaleTimeString()}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// Onglet Profil
+const ProfileTab: React.FC<{
+  user: any;
+  onLogout: () => void;
+  onEditProfile: () => void;
+}> = ({ user, onLogout, onEditProfile }) => {
+  return (
+    <div className="p-4 space-y-6">
+      <div className="flex items-center gap-4">
+        {user?.photoURL ? (
+          <img src={user.photoURL} alt="profile" className="w-16 h-16 rounded-2xl object-cover" />
+        ) : (
+          <div className="w-16 h-16 bg-blue-100 rounded-2xl flex items-center justify-center text-blue-600 text-2xl">
+            <i className="fa-solid fa-user"></i>
+          </div>
+        )}
+        <div>
+          <h2 className="text-xl font-black text-gray-900">{user?.name}</h2>
+          <p className="text-sm text-gray-500">{user?.email}</p>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <button
+          onClick={onEditProfile}
+          className="w-full p-4 bg-gray-100 rounded-xl text-left font-black text-gray-700 flex items-center gap-3"
+        >
+          <i className="fa-solid fa-pen-to-square w-6"></i>
+          <span>Modifier le profil</span>
+        </button>
+        <button
+          onClick={onLogout}
+          className="w-full p-4 bg-red-50 text-red-600 rounded-xl text-left font-black flex items-center gap-3"
+        >
+          <i className="fa-solid fa-right-from-bracket w-6"></i>
+          <span>Déconnexion</span>
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// ==================== COMPOSANT PRINCIPAL PATIENTAPP ====================
 interface PatientAppProps {
   t: any;
-  onNewOrder: (order: any) => void;
+  onNewOrder: (order: any) => Promise<boolean> | void;
   orders: Order[];
   onUpdateOrder: (orderId: string, updates: Partial<Order>) => void;
-  step: string;
-  setStep: any;
   activeOrderId: string | null;
   setActiveOrderId: (id: string | null) => void;
   addNotification?: (message: string, type?: 'info' | 'urgent') => void;
   mockUser?: any;
   paymentMethods: PaymentMethod[];
+  onLogout: () => void;
+  onOpenProfileModal: () => void;
 }
 
 const PatientApp: React.FC<PatientAppProps> = ({
-  t, onNewOrder, orders, onUpdateOrder, activeOrderId, setActiveOrderId, addNotification, mockUser, paymentMethods
+  t,
+  onNewOrder,
+  orders,
+  onUpdateOrder,
+  activeOrderId,
+  setActiveOrderId,
+  addNotification,
+  mockUser,
+  paymentMethods,
+  onLogout,
+  onOpenProfileModal,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0); // progression upload 0-100
   const [processingOrderId, setProcessingOrderId] = useState<string | null>(null);
   const user = mockUser || { uid: 'p-demo', name: 'Ahmed Abdallah' };
+
   const [notifiedOrderIds, setNotifiedOrderIds] = useState<Set<string>>(new Set());
+  const [patientLocation, setPatientLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [locationError, setLocationError] = useState<string | null>(null);
+
+  const [activeTab, setActiveTab] = useState<'home' | 'history' | 'notifications' | 'profile'>('home');
+  const [notificationsList, setNotificationsList] = useState<Array<{ id: string; message: string; type: string; timestamp: Date }>>([]);
 
   const [selectedQuote, setSelectedQuote] = useState<{ orderId: string; quote: Quote } | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<string>('');
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentTypeChoice, setPaymentTypeChoice] = useState<'online' | 'cod' | null>(null);
+  const [currentQuoteIndex, setCurrentQuoteIndex] = useState(0);
+  const [quotesList, setQuotesList] = useState<Quote[]>([]);
+  const [showQuote, setShowQuote] = useState(false);
+
+  // État pour les notifications sonores répétées
+  const [notifiedQuotes, setNotifiedQuotes] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          setPatientLocation({
+            lat: position.coords.latitude,
+            lng: position.coords.longitude,
+          });
+        },
+        (error) => {
+          setLocationError("Impossible d'obtenir votre position.");
+          console.error(error);
+        }
+      );
+    }
+  }, []);
+
+  const myOrders = useMemo(() => orders.filter(o => o.patientId === user.uid), [orders, user]);
+  const pendingOrders = useMemo(() => myOrders.filter(o => o.status === OrderStatus.AWAITING_QUOTES), [myOrders]);
+  const inProgressOrders = useMemo(
+    () => myOrders.filter(o => [OrderStatus.PREPARING, OrderStatus.READY_FOR_PICKUP, OrderStatus.OUT_FOR_DELIVERY].includes(o.status)),
+    [myOrders]
+  );
+  const allOrders = useMemo(() => myOrders, [myOrders]);
 
   const selectedOrder = useMemo(() => orders.find(o => o.id === activeOrderId) || null, [orders, activeOrderId]);
-  const myOrders = useMemo(() => orders.filter(o => o.patientId === user.uid), [orders, user]);
 
-  const pendingOrders = useMemo(() => myOrders.filter(o => o.status === OrderStatus.AWAITING_QUOTES), [myOrders]);
-  const inProgressOrders = useMemo(() => myOrders.filter(o => 
-    [OrderStatus.PREPARING, OrderStatus.READY_FOR_PICKUP, OrderStatus.OUT_FOR_DELIVERY].includes(o.status)
-  ), [myOrders]);
-  const completedOrders = useMemo(() => myOrders.filter(o => o.status === OrderStatus.DELIVERED), [myOrders]);
-  const cancelledOrders = useMemo(() => myOrders.filter(o => o.status === OrderStatus.CANCELLED), [myOrders]);
+  // Détection des commandes avec nouveaux devis
+  const ordersWithNewQuotes = useMemo(() => {
+    return myOrders.filter(o => 
+      o.status === OrderStatus.AWAITING_QUOTES && 
+      o.quotes?.length > 0 && 
+      !o.pharmacyId
+    );
+  }, [myOrders]);
+
+  // Hook pour sonnerie répétée (toujours active)
+  useSoundReminder({
+    condition: ordersWithNewQuotes.length > 0 && !(notifiedQuotes.has(ordersWithNewQuotes[0]?.id)),
+    intervalMs: 60000,
+    soundEnabled: true,
+    onStop: () => {
+      setNotifiedQuotes(prev => {
+        const newSet = new Set(prev);
+        ordersWithNewQuotes.forEach(o => newSet.add(o.id));
+        return newSet;
+      });
+    }
+  });
+
+  useEffect(() => {
+    if (selectedOrder && selectedOrder.quotes && selectedOrder.quotes.length > 0) {
+      const sorted = [...selectedOrder.quotes].sort((a, b) => {
+        const getPriority = (q: Quote) => {
+          const hasUnavailable = q.items.some(i => i.status === 'UNAVAILABLE');
+          const hasGeneric = q.items.some(i => i.status === 'GENERIC_AVAILABLE');
+          if (hasUnavailable) return 2;
+          if (hasGeneric) return 1;
+          return 0;
+        };
+        const prioA = getPriority(a);
+        const prioB = getPriority(b);
+        if (prioA !== prioB) return prioA - prioB;
+        return (a.totalAmount + a.deliveryFee) - (b.totalAmount + b.deliveryFee);
+      });
+      setQuotesList(sorted);
+      setCurrentQuoteIndex(0);
+      setShowQuote(true);
+    } else {
+      setQuotesList([]);
+      setShowQuote(false);
+    }
+  }, [selectedOrder]);
 
   useEffect(() => {
     if (selectedOrder && selectedOrder.quotes.length > 0 && selectedOrder.status === OrderStatus.AWAITING_QUOTES) {
       if (!notifiedOrderIds.has(selectedOrder.id)) {
         setNotifiedOrderIds(prev => new Set(prev).add(selectedOrder.id));
         addNotification?.(`📄 Un devis est disponible pour votre commande ${selectedOrder.id}`, 'info');
+        setNotificationsList(prev => [
+          { id: Date.now().toString(), message: `Devis reçu pour ${selectedOrder.id}`, type: 'info', timestamp: new Date() },
+          ...prev,
+        ]);
       }
     }
   }, [selectedOrder, addNotification, notifiedOrderIds]);
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    // Vérification taille max 10MB
+    if (file.size > 10 * 1024 * 1024) {
+      addNotification?.('❌ Image trop lourde. Maximum 10MB.', 'urgent');
+      return;
+    }
+
     setIsUploading(true);
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      onNewOrder({
+    setUploadProgress(0);
+
+    try {
+      // 1. Upload vers Firebase Storage (stockage permanent)
+      const timestamp = Date.now();
+      const fileName = `prescriptions/${user.uid}/${timestamp}_${file.name.replace(/[^a-zA-Z0-9.]/g, '_')}`;
+      const storageRef = ref(storage, fileName);
+      const uploadTask = uploadBytesResumable(storageRef, file);
+
+      // 2. Attendre la fin de l'upload avec suivi de la progression
+      const downloadURL = await new Promise<string>((resolve, reject) => {
+        uploadTask.on(
+          'state_changed',
+          (snapshot) => {
+            const progress = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
+            setUploadProgress(progress);
+          },
+          (error) => {
+            console.error('Erreur upload Storage:', error);
+            reject(error);
+          },
+          async () => {
+            const url = await getDownloadURL(uploadTask.snapshot.ref);
+            resolve(url);
+          }
+        );
+      });
+
+      // 3. Créer la commande avec l'URL permanente Firebase Storage
+      await onNewOrder({
         patientId: user.uid,
         patientName: user.name,
         status: OrderStatus.AWAITING_QUOTES,
@@ -313,19 +692,56 @@ const PatientApp: React.FC<PatientAppProps> = ({
         targetedPharmacyIds: [],
         refusedByPharmacyIds: [],
         acceptedByPharmacyIds: [],
-        prescriptionImageUrl: reader.result as string
+        prescriptionImageUrl: downloadURL, // ✅ URL permanente Firebase Storage
+        patientLocation: patientLocation || undefined,
       });
+
+      addNotification?.('🚀 Ordonnance transmise aux officines', 'info');
+      setNotificationsList(prev => [
+        { id: Date.now().toString(), message: 'Ordonnance envoyée', type: 'info', timestamp: new Date() },
+        ...prev,
+      ]);
+    } catch (error: any) {
+      console.error('Erreur upload:', error);
+      if (error?.code === 'storage/unauthorized') {
+        addNotification?.('❌ Accès refusé. Vérifiez vos permissions Firebase.', 'urgent');
+      } else {
+        addNotification?.('❌ Erreur lors de l\'envoi. Réessayez.', 'urgent');
+      }
+    } finally {
       setIsUploading(false);
-      if (addNotification) addNotification('🚀 Ordonnance transmise aux officines', 'info');
-    };
-    reader.readAsDataURL(file);
+      setUploadProgress(0);
+      // Reset input pour permettre le même fichier
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const triggerUpload = () => {
+    fileInputRef.current?.click();
   };
 
   const handleAcceptQuote = (orderId: string, quote: Quote) => {
+    // Marquer comme notifiée pour arrêter la sonnerie
+    setNotifiedQuotes(prev => new Set(prev).add(orderId));
     setSelectedQuote({ orderId, quote });
     setPaymentMethod('');
     setPaymentTypeChoice(null);
     setShowPaymentModal(true);
+  };
+
+  const handleRejectQuote = () => {
+    if (selectedOrder) {
+      setNotifiedQuotes(prev => new Set(prev).add(selectedOrder.id));
+    }
+    if (currentQuoteIndex < quotesList.length - 1) {
+      setCurrentQuoteIndex(prev => prev + 1);
+    } else {
+      setShowQuote(false);
+      if (window.confirm('Aucune autre offre. Voulez-vous annuler cette commande ?')) {
+        onUpdateOrder(selectedOrder!.id, { status: OrderStatus.CANCELLED });
+        setActiveOrderId(null);
+      }
+    }
   };
 
   const confirmPayment = () => {
@@ -341,7 +757,7 @@ const PatientApp: React.FC<PatientAppProps> = ({
         deliveryFee: selectedQuote.quote.deliveryFee,
         items: selectedQuote.quote.items,
         paymentMethod,
-        paymentType: method?.type
+        paymentType: method?.type,
       });
       setProcessingOrderId(null);
       setShowPaymentModal(false);
@@ -349,279 +765,278 @@ const PatientApp: React.FC<PatientAppProps> = ({
       setActiveOrderId(null);
       setPaymentTypeChoice(null);
       setPaymentMethod('');
-      if (addNotification) addNotification(`✅ Paiement ${method?.type === 'cod' ? 'à la livraison' : 'en ligne'} confirmé – Préparation en cours`, 'info');
+      addNotification?.(`✅ Paiement ${method?.type === 'cod' ? 'à la livraison' : 'en ligne'} confirmé – Préparation en cours`, 'info');
+      setNotificationsList(prev => [
+        { id: Date.now().toString(), message: `Commande ${selectedQuote.orderId} confirmée`, type: 'info', timestamp: new Date() },
+        ...prev,
+      ]);
     }, 500);
   };
 
   return (
-    <div className="h-full overflow-y-auto bg-gray-50 p-4 md:p-8">
-      <div className="max-w-7xl mx-auto space-y-8 pb-20">
-        <header className="flex flex-col md:flex-row md:justify-between md:items-center gap-6 pt-4">
-          <div className="text-center md:text-left">
-            <h1 className="text-2xl md:text-3xl font-black text-gray-900">Bonjour, {user.name.split(' ')[0]}</h1>
-            <p className="text-sm text-gray-500 mt-1">{t.patient.subtitle}</p>
-          </div>
+    <div className="h-full flex flex-col bg-gray-50">
+      <main className="flex-1 overflow-y-auto">
+        {activeTab === 'home' && (
+          <HomeTab
+            user={user}
+            pendingOrders={pendingOrders}
+            inProgressOrders={inProgressOrders}
+            onUpload={triggerUpload}
+            isUploading={isUploading}
+            uploadProgress={uploadProgress}
+            onOrderClick={setActiveOrderId}
+            t={t}
+          />
+        )}
+        {activeTab === 'history' && (
+          <HistoryTab
+            orders={allOrders}
+            onOrderClick={setActiveOrderId}
+            t={t}
+          />
+        )}
+        {activeTab === 'notifications' && (
+          <NotificationsTab notifications={notificationsList} />
+        )}
+        {activeTab === 'profile' && (
+          <ProfileTab
+            user={user}
+            onLogout={onLogout}
+            onEditProfile={onOpenProfileModal}
+          />
+        )}
+      </main>
+
+      <nav className="bg-white border-t border-gray-200 flex items-center justify-around py-2 shrink-0">
+        {[
+          { id: 'home', icon: 'fa-house', label: 'Accueil' },
+          { id: 'history', icon: 'fa-clock-rotate-left', label: 'Historique' },
+          { id: 'notifications', icon: 'fa-bell', label: 'Notifications', badge: notificationsList.length },
+          { id: 'profile', icon: 'fa-user', label: 'Profil' },
+        ].map(item => (
           <button
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isUploading}
-            className="w-full md:w-auto px-8 py-4 md:py-6 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-xl md:rounded-2xl font-black uppercase text-base md:text-lg tracking-wider shadow-xl hover:shadow-2xl hover:scale-[1.02] transition-all active:scale-95 disabled:opacity-50 flex items-center justify-center gap-4"
+            key={item.id}
+            onClick={() => setActiveTab(item.id as any)}
+            className={`flex flex-col items-center p-2 rounded-xl transition-colors ${
+              activeTab === item.id ? 'text-blue-600' : 'text-gray-400'
+            }`}
           >
-            {isUploading ? (
-              <i className="fa-solid fa-spinner fa-spin text-xl md:text-2xl"></i>
-            ) : (
-              <>
-                <i className="fa-solid fa-camera text-xl md:text-2xl"></i>
-                <span className="whitespace-nowrap">{t.patient.upload_btn}</span>
-              </>
-            )}
+            <div className="relative">
+              <i className={`fa-solid ${item.icon} text-xl`}></i>
+              {item.badge > 0 && (
+                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] font-black rounded-full w-4 h-4 flex items-center justify-center">
+                  {item.badge}
+                </span>
+              )}
+            </div>
+            <span className="text-[10px] font-medium mt-1">{item.label}</span>
           </button>
-          <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleFileUpload} />
-        </header>
+        ))}
+      </nav>
 
-        <section className="space-y-8">
-          {pendingOrders.length > 0 && (
-            <div>
-              <h2 className="text-lg md:text-xl font-black text-gray-800 mb-4 flex items-center gap-2">
-                <span className="w-3 h-3 bg-amber-400 rounded-full"></span>
-                En attente de devis ({pendingOrders.length})
-              </h2>
-              <div className="space-y-4 md:grid md:grid-cols-2 md:gap-6 md:space-y-0">
-                {pendingOrders.map(order => (
-                  <div key={order.id} className="hidden md:block">
-                    <DesktopOrderCard order={order} onClick={setActiveOrderId} t={t} />
-                  </div>
-                ))}
-                {pendingOrders.map(order => (
-                  <div key={order.id} className="md:hidden">
-                    <CompactOrderCard order={order} onClick={setActiveOrderId} t={t} />
-                  </div>
-                ))}
+      <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleFileUpload} />
+
+      {/* MODALE DE DÉTAIL D'UNE COMMANDE */}
+      {selectedOrder && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-2 animate-in fade-in duration-200"
+          onClick={() => setActiveOrderId(null)}
+        >
+          <div
+            className="bg-white w-full max-w-lg rounded-xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="relative bg-gradient-to-r from-blue-600 to-indigo-600 p-4 flex items-center justify-between">
+              <button
+                onClick={() => setActiveOrderId(null)}
+                className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center text-white hover:bg-white/30 transition-colors"
+                aria-label="Fermer"
+              >
+                <i className="fa-solid fa-xmark text-lg"></i>
+              </button>
+              <div className="flex-1 text-center">
+                <p className="text-white/80 text-[8px] font-black uppercase tracking-wider">Détails de la commande</p>
+                <h3 className="text-sm font-black text-white">{selectedOrder.id}</h3>
               </div>
+              <div className="w-10" />
             </div>
-          )}
 
-          {inProgressOrders.length > 0 && (
-            <div>
-              <h2 className="text-lg md:text-xl font-black text-gray-800 mb-4 flex items-center gap-2">
-                <span className="w-3 h-3 bg-blue-500 rounded-full"></span>
-                En cours ({inProgressOrders.length})
-              </h2>
-              <div className="space-y-4 md:grid md:grid-cols-2 md:gap-6 md:space-y-0">
-                {inProgressOrders.map(order => (
-                  <div key={order.id} className="hidden md:block">
-                    <DesktopOrderCard order={order} onClick={setActiveOrderId} t={t} />
-                  </div>
-                ))}
-                {inProgressOrders.map(order => (
-                  <div key={order.id} className="md:hidden">
-                    <CompactOrderCard order={order} onClick={setActiveOrderId} t={t} />
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {completedOrders.length > 0 && (
-            <div>
-              <h2 className="text-lg md:text-xl font-black text-gray-800 mb-4 flex items-center gap-2">
-                <span className="w-3 h-3 bg-gray-400 rounded-full"></span>
-                Livrées ({completedOrders.length})
-              </h2>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
-                {completedOrders.map(order => (
-                  <div
-                    key={order.id}
-                    onClick={() => setActiveOrderId(order.id)}
-                    className="group relative aspect-square bg-white rounded-xl md:rounded-2xl overflow-hidden border border-gray-200 shadow-sm cursor-pointer hover:shadow-md transition-all"
-                  >
-                    <img src={order.prescriptionImageUrl} className="w-full h-full object-cover group-hover:scale-110 transition-transform" />
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity p-2 md:p-3 flex flex-col justify-end">
-                      <p className="text-white text-[8px] md:text-xs font-black uppercase">{order.id}</p>
+            <div className="flex-1 overflow-y-auto p-3 space-y-3">
+              {showQuote && quotesList.length > 0 && (
+                <div className="space-y-3">
+                  <QuoteDetails quote={quotesList[currentQuoteIndex]} t={t} />
+                  {selectedOrder.status === OrderStatus.AWAITING_QUOTES && (
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleAcceptQuote(selectedOrder.id, quotesList[currentQuoteIndex])}
+                        disabled={processingOrderId === selectedOrder.id}
+                        className="flex-1 py-3 bg-blue-600 text-white rounded-lg font-black uppercase text-xs tracking-wider shadow-md hover:bg-blue-700 active:scale-[0.99] transition-all disabled:opacity-50"
+                      >
+                        {processingOrderId === selectedOrder.id ? 'Traitement...' : t.patient?.confirm_pay || 'Confirmer et payer'}
+                      </button>
+                      <button
+                        onClick={handleRejectQuote}
+                        disabled={processingOrderId === selectedOrder.id}
+                        className="flex-1 py-3 bg-gray-200 text-gray-700 rounded-lg font-black uppercase text-xs tracking-wider hover:bg-gray-300 transition-all disabled:opacity-50"
+                      >
+                        Refuser
+                      </button>
                     </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+                  )}
+                  {currentQuoteIndex < quotesList.length - 1 && (
+                    <p className="text-xs text-gray-500 text-center">Offre {currentQuoteIndex + 1}/{quotesList.length}</p>
+                  )}
+                </div>
+              )}
+              {!showQuote && selectedOrder.status === OrderStatus.AWAITING_QUOTES && (
+                <div className="py-8 text-center bg-gray-50 rounded-lg border-2 border-dashed border-gray-200">
+                  <i className="fa-solid fa-clock text-3xl text-gray-300 mb-2"></i>
+                  <p className="text-sm font-black text-gray-800">Recherche en cours</p>
+                  <p className="text-xs text-gray-500 mt-1">Nous trouvons la meilleure pharmacie</p>
+                </div>
+              )}
+              {selectedOrder.status === OrderStatus.CANCELLED && (
+                <div className="py-8 text-center bg-red-50 rounded-lg border-2 border-red-200">
+                  <i className="fa-solid fa-circle-exclamation text-3xl text-red-300 mb-2"></i>
+                  <p className="text-sm font-black text-red-800">Commande annulée</p>
+                  <p className="text-xs text-red-500 mt-1">Aucune pharmacie disponible au moment de la demande</p>
+                </div>
+              )}
+              {![OrderStatus.AWAITING_QUOTES, OrderStatus.CANCELLED].includes(selectedOrder.status) && (
+                <div className="py-4 text-center">
+                  <p className="text-sm font-black text-gray-800">Statut : {selectedOrder.status.replace(/_/g, ' ')}</p>
+                  {selectedOrder.status === OrderStatus.DELIVERED && selectedOrder.pharmacyName && (
+                    <p className="text-xs text-gray-600 mt-2">Pharmacie : {selectedOrder.pharmacyName}</p>
+                  )}
+                </div>
+              )}
 
-          {cancelledOrders.length > 0 && (
-            <div>
-              <h2 className="text-lg md:text-xl font-black text-gray-800 mb-4 flex items-center gap-2">
-                <span className="w-3 h-3 bg-red-400 rounded-full"></span>
-                Annulées ({cancelledOrders.length})
-              </h2>
-              <div className="space-y-4 md:grid md:grid-cols-2 md:gap-6 md:space-y-0">
-                {cancelledOrders.map(order => (
-                  <div key={order.id} className="hidden md:block">
-                    <DesktopOrderCard order={order} onClick={setActiveOrderId} t={t} />
-                  </div>
-                ))}
-                {cancelledOrders.map(order => (
-                  <div key={order.id} className="md:hidden">
-                    <CompactOrderCard order={order} onClick={setActiveOrderId} t={t} />
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+              {selectedOrder.status === OrderStatus.OUT_FOR_DELIVERY && selectedOrder.driverId && (
+                <div className="mt-2 border-t pt-3">
+                  <h4 className="font-black text-xs text-slate-400 mb-2">Suivi du livreur</h4>
+                  <MapView
+                    center={selectedOrder.patientLocation ? [selectedOrder.patientLocation.lat, selectedOrder.patientLocation.lng] : undefined}
+                    markers={[
+                      ...(selectedOrder.patientLocation ? [{ position: [selectedOrder.patientLocation.lat, selectedOrder.patientLocation.lng] as [number, number], popup: 'Votre adresse', icon: 'patient' as const }] : []),
+                      ...(selectedOrder.driverLocation ? [{ position: [selectedOrder.driverLocation.lat, selectedOrder.driverLocation.lng] as [number, number], popup: 'Livreur', icon: 'driver' as const }] : [])
+                    ]}
+                    height="250px"
+                    zoomControl={true}
+                  />
+                </div>
+              )}
 
-          {myOrders.length === 0 && (
-            <div className="py-16 md:py-24 bg-white rounded-2xl md:rounded-3xl border-2 border-dashed border-gray-200 flex flex-col items-center justify-center text-center space-y-4">
-              <div className="w-20 h-20 md:w-24 md:h-24 bg-gray-100 rounded-full flex items-center justify-center text-gray-400 text-3xl md:text-4xl">
-                <i className="fa-solid fa-prescription"></i>
-              </div>
-              <p className="text-lg md:text-xl font-black text-gray-300">Aucune commande</p>
-              <p className="text-sm text-gray-400">Scannez votre première ordonnance</p>
-            </div>
-          )}
-        </section>
-
-        {selectedOrder && (
-          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
-            <div className="bg-white w-full max-w-2xl rounded-2xl md:rounded-3xl overflow-hidden shadow-2xl flex flex-col max-h-[85vh]">
-              <div className="relative h-20 md:h-24 bg-gradient-to-r from-blue-600 to-indigo-600 p-4 md:p-6 flex items-end">
+              {(!showQuote || (showQuote && selectedOrder.status !== OrderStatus.AWAITING_QUOTES)) && (
                 <button
                   onClick={() => setActiveOrderId(null)}
-                  className="absolute top-3 right-3 md:top-4 md:right-4 w-8 h-8 md:w-10 md:h-10 bg-white/20 rounded-full flex items-center justify-center text-white hover:bg-white/30 transition-colors"
+                  className="w-full py-3 bg-gray-200 text-gray-700 rounded-lg font-black uppercase text-sm tracking-wider hover:bg-gray-300 transition-colors mt-2"
                 >
-                  <i className="fa-solid fa-xmark text-sm md:text-lg"></i>
+                  Fermer
                 </button>
-                <p className="text-white/80 text-[10px] md:text-xs font-black uppercase tracking-wider">Détails de la commande</p>
-                <h3 className="text-lg md:text-xl font-black text-white ml-4">{selectedOrder.id}</h3>
-              </div>
-              <div className="flex-1 overflow-y-auto p-5 md:p-6 space-y-5">
-                {selectedOrder.quotes && selectedOrder.quotes.length > 0 ? (
-                  <div className="space-y-4">
-                    {selectedOrder.quotes.map((q, idx) => (
-                      <div key={idx} className="space-y-3">
-                        <QuoteDetails quote={q} t={t} />
-                        {selectedOrder.status === OrderStatus.AWAITING_QUOTES && (
-                          <button
-                            onClick={() => handleAcceptQuote(selectedOrder.id, q)}
-                            disabled={processingOrderId === selectedOrder.id}
-                            className="w-full py-4 bg-blue-600 text-white rounded-xl font-black uppercase text-sm tracking-wider shadow-md hover:bg-blue-700 active:scale-[0.99] transition-all disabled:opacity-50"
-                          >
-                            {processingOrderId === selectedOrder.id ? 'Traitement...' : t.patient.confirm_pay}
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                ) : selectedOrder.status === OrderStatus.AWAITING_QUOTES ? (
-                  <div className="py-12 text-center bg-gray-50 rounded-xl border-2 border-dashed border-gray-200">
-                    <i className="fa-solid fa-clock text-4xl text-gray-300 mb-3"></i>
-                    <p className="text-sm font-black text-gray-800">Recherche en cours</p>
-                    <p className="text-xs text-gray-500 mt-1">Nous trouvons la meilleure pharmacie</p>
-                  </div>
-                ) : selectedOrder.status === OrderStatus.CANCELLED ? (
-                  <div className="py-12 text-center bg-red-50 rounded-xl border-2 border-red-200">
-                    <i className="fa-solid fa-circle-exclamation text-4xl text-red-300 mb-3"></i>
-                    <p className="text-sm font-black text-red-800">Commande annulée</p>
-                    <p className="text-xs text-red-500 mt-1">Aucune pharmacie disponible au moment de la demande</p>
-                  </div>
-                ) : (
-                  <div className="py-8 text-center">
-                    <p className="text-sm font-black text-gray-800">Statut : {selectedOrder.status.replace(/_/g, ' ')}</p>
-                  </div>
-                )}
-              </div>
+              )}
             </div>
           </div>
-        )}
+        </div>
+      )}
 
-        {showPaymentModal && selectedQuote && (
-          <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
-            <div className="bg-white w-full max-w-md rounded-2xl overflow-hidden shadow-2xl">
-              <div className="bg-gradient-to-r from-blue-600 to-indigo-600 p-6">
-                <h3 className="text-white text-xl font-black">
-                  {paymentTypeChoice ? 'Choisissez votre mode de paiement' : 'Comment souhaitez-vous payer ?'}
-                </h3>
-                <p className="text-white/80 text-sm mt-1">
-                  Montant total : {(selectedQuote.quote.totalAmount + selectedQuote.quote.deliveryFee).toLocaleString()} DJF
-                </p>
-              </div>
-              <div className="p-6 space-y-4">
-                {!paymentTypeChoice ? (
-                  <div className="space-y-3">
+      {/* MODALE DE PAIEMENT */}
+      {showPaymentModal && selectedQuote && (
+        <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-white w-full max-w-md rounded-2xl overflow-hidden shadow-2xl">
+            <div className="bg-gradient-to-r from-blue-600 to-indigo-600 p-6">
+              <h3 className="text-white text-xl font-black">
+                Comment souhaitez-vous payer ?
+              </h3>
+              <p className="text-white/80 text-sm mt-1">
+                Montant total : {(selectedQuote.quote.totalAmount + selectedQuote.quote.deliveryFee).toLocaleString()} DJF
+              </p>
+            </div>
+            <div className="p-6 space-y-4">
+              {!paymentTypeChoice ? (
+                <div className="space-y-3">
+                  <button
+                    onClick={() => setPaymentTypeChoice('online')}
+                    className="w-full p-4 rounded-xl border-2 border-gray-200 hover:border-blue-600 transition-all flex items-center gap-4"
+                  >
+                    <div className="w-10 h-10 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center">
+                      <i className="fa-solid fa-credit-card"></i>
+                    </div>
+                    <span className="flex-1 text-left font-black text-gray-900">Payer en ligne</span>
+                    <i className="fa-solid fa-chevron-right text-gray-400"></i>
+                  </button>
+                  <button
+                    onClick={() => {
+                      // Paiement à la livraison : validation immédiate
+                      setPaymentMethod('cod');
+                      setTimeout(() => confirmPayment(), 0);
+                    }}
+                    className="w-full p-4 rounded-xl border-2 border-gray-200 hover:border-blue-600 transition-all flex items-center gap-4"
+                  >
+                    <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center">
+                      <i className="fa-solid fa-truck"></i>
+                    </div>
+                    <span className="flex-1 text-left font-black text-gray-900">Payer à la livraison</span>
+                    <i className="fa-solid fa-chevron-right text-gray-400"></i>
+                  </button>
+                  <button
+                    onClick={() => setShowPaymentModal(false)}
+                    className="w-full py-4 text-gray-500 font-black uppercase text-sm hover:text-gray-700 transition-colors"
+                  >
+                    Annuler
+                  </button>
+                </div>
+              ) : (
+                // Sélection des moyens de paiement en ligne
+                <>
+                  {paymentMethods.filter(m => m.active && m.type === 'online').map(method => (
                     <button
-                      onClick={() => setPaymentTypeChoice('online')}
-                      className="w-full p-4 rounded-xl border-2 border-gray-200 hover:border-blue-600 transition-all flex items-center gap-4"
+                      key={method.id}
+                      onClick={() => setPaymentMethod(method.code)}
+                      className={`w-full p-4 rounded-xl border-2 flex items-center gap-4 transition-all ${
+                        paymentMethod === method.code
+                          ? 'border-blue-600 bg-blue-50'
+                          : 'border-gray-200 hover:border-gray-300'
+                      }`}
                     >
-                      <div className="w-10 h-10 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center">
-                        <i className="fa-solid fa-credit-card"></i>
+                      <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
+                        paymentMethod === method.code ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600'
+                      }`}>
+                        {method.logo ? (
+                          <img src={method.logo} alt={method.name} className="w-6 h-6 object-contain" />
+                        ) : (
+                          <i className={`fa-solid ${method.icon}`}></i>
+                        )}
                       </div>
-                      <span className="flex-1 text-left font-black text-gray-900">Payer en ligne</span>
-                      <i className="fa-solid fa-chevron-right text-gray-400"></i>
+                      <span className="flex-1 text-left font-black text-gray-900">{method.name}</span>
+                      {paymentMethod === method.code && (
+                        <i className="fa-solid fa-check-circle text-blue-600 text-xl"></i>
+                      )}
+                    </button>
+                  ))}
+                  <div className="flex gap-3 pt-4">
+                    <button
+                      onClick={() => {
+                        setPaymentTypeChoice(null);
+                        setPaymentMethod('');
+                      }}
+                      className="flex-1 py-4 bg-gray-100 text-gray-700 rounded-xl font-black uppercase text-sm hover:bg-gray-200 transition-colors"
+                    >
+                      Retour
                     </button>
                     <button
-                      onClick={() => setPaymentTypeChoice('cod')}
-                      className="w-full p-4 rounded-xl border-2 border-gray-200 hover:border-blue-600 transition-all flex items-center gap-4"
+                      onClick={confirmPayment}
+                      disabled={!paymentMethod}
+                      className="flex-1 py-4 bg-blue-600 text-white rounded-xl font-black uppercase text-sm hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center">
-                        <i className="fa-solid fa-truck"></i>
-                      </div>
-                      <span className="flex-1 text-left font-black text-gray-900">Payer à la livraison</span>
-                      <i className="fa-solid fa-chevron-right text-gray-400"></i>
-                    </button>
-                    <button
-                      onClick={() => setShowPaymentModal(false)}
-                      className="w-full py-4 text-gray-500 font-black uppercase text-sm hover:text-gray-700 transition-colors"
-                    >
-                      Annuler
+                      Confirmer
                     </button>
                   </div>
-                ) : (
-                  <>
-                    {paymentMethods.filter(m => m.active && m.type === paymentTypeChoice).map(method => (
-                      <button
-                        key={method.id}
-                        onClick={() => setPaymentMethod(method.code)}
-                        className={`w-full p-4 rounded-xl border-2 flex items-center gap-4 transition-all ${
-                          paymentMethod === method.code
-                            ? 'border-blue-600 bg-blue-50'
-                            : 'border-gray-200 hover:border-gray-300'
-                        }`}
-                      >
-                        <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                          paymentMethod === method.code ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600'
-                        }`}>
-                          {method.logo ? (
-                            <img src={method.logo} alt={method.name} className="w-6 h-6 object-contain" />
-                          ) : (
-                            <i className={`fa-solid ${method.icon}`}></i>
-                          )}
-                        </div>
-                        <span className="flex-1 text-left font-black text-gray-900">{method.name}</span>
-                        {paymentMethod === method.code && (
-                          <i className="fa-solid fa-check-circle text-blue-600 text-xl"></i>
-                        )}
-                      </button>
-                    ))}
-                    <div className="flex gap-3 pt-4">
-                      <button
-                        onClick={() => {
-                          setPaymentTypeChoice(null);
-                          setPaymentMethod('');
-                        }}
-                        className="flex-1 py-4 bg-gray-100 text-gray-700 rounded-xl font-black uppercase text-sm hover:bg-gray-200 transition-colors"
-                      >
-                        Retour
-                      </button>
-                      <button
-                        onClick={confirmPayment}
-                        disabled={!paymentMethod}
-                        className="flex-1 py-4 bg-blue-600 text-white rounded-xl font-black uppercase text-sm hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        Confirmer
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
+                </>
+              )}
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -1,33 +1,16 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Order, OrderStatus, PrescriptionItem, UserProfile } from '@/types';
-import { MOCK_PHARMACIES } from '@/mockData';
-import { MOCK_MEDICINES, MedicineVariant } from '@/mockMedicines';
-import { runTransaction, doc } from 'firebase/firestore';
+import { Order, OrderStatus, PrescriptionItem, UserProfile, Pharmacy } from '@/types';
+import { runTransaction, doc, collection, onSnapshot } from 'firebase/firestore';
 import { db } from '@/firebase';
+import { useSoundReminder } from '@/hooks/useSoundReminder';
+import useTimer from '@/hooks/useTimer';
 
-const useSlaTimer = (deadline?: string) => {
-  const [timeLeft, setTimeLeft] = useState<number>(0);
-  
-  useEffect(() => {
-    if (!deadline) return;
-    const calculate = () => {
-      const diff = new Date(deadline).getTime() - new Date().getTime();
-      setTimeLeft(Math.max(0, Math.floor(diff / 1000)));
-    };
-    calculate();
-    const timer = setInterval(calculate, 1000);
-    return () => clearInterval(timer);
-  }, [deadline]);
-
-  if (!deadline) return null;
-  const minutes = Math.floor(timeLeft / 60);
-  const seconds = timeLeft % 60;
-  return { 
-    text: `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`, 
-    raw: timeLeft,
-    isExpired: timeLeft <= 0,
-    isUrgent: timeLeft < 60 
-  };
+type MedicineVariant = {
+  id: string;
+  baseName: string;
+  dci?: string;
+  packaging: string;
+  defaultPrice: number;
 };
 
 interface MedicineLineProps {
@@ -38,6 +21,7 @@ interface MedicineLineProps {
   onRemove?: () => void;
   onPriceSave?: (medicineName: string, price: number) => void;
   storedPrices?: Record<string, number>;
+  medicines: MedicineVariant[];
 }
 
 const MedicineLine: React.FC<MedicineLineProps> = ({ 
@@ -47,7 +31,8 @@ const MedicineLine: React.FC<MedicineLineProps> = ({
   onUpdate,
   onRemove,
   onPriceSave,
-  storedPrices
+  storedPrices,
+  medicines
 }) => {
   const [suggestions, setSuggestions] = useState<Record<string, MedicineVariant[]>>({});
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -72,7 +57,7 @@ const MedicineLine: React.FC<MedicineLineProps> = ({
     onUpdate?.({ name: val });
     if (val.trim().length > 0) {
       const normalizedVal = normalizeString(val);
-      const filtered = MOCK_MEDICINES.filter(m => 
+      const filtered = medicines.filter(m =>
         normalizeString(m.baseName).includes(normalizedVal)
       );
       const grouped = filtered.reduce((acc, curr) => {
@@ -159,7 +144,7 @@ const MedicineLine: React.FC<MedicineLineProps> = ({
                         <div className="px-4 py-2 bg-slate-50/50 text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
                           <i className="fa-solid fa-tag text-[8px]"></i> {baseName}
                         </div>
-                        {(variants as MedicineVariant[]).map((v) => {
+                        {variants.map((v) => {
                           const vIdx = flatVariants.indexOf(v);
                           return (
                             <button 
@@ -297,12 +282,14 @@ interface PharmacyAppProps {
   user: UserProfile;
   users: UserProfile[];
   addNotification: (message: string, type?: 'info' | 'urgent') => void;
+  pharmacies: Pharmacy[];
 }
 
 const PharmacyApp: React.FC<PharmacyAppProps> = ({ 
   t, orders, onUpdateOrder, drafts, onUpdateDraft, onAcceptOrder, onRefuseOrder,
   currentPharmacyId, onSetCurrentPharmacy, onToggleStatus, onlineStatus, user, users,
-  addNotification
+  addNotification,
+  pharmacies
 }) => {
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -311,6 +298,35 @@ const PharmacyApp: React.FC<PharmacyAppProps> = ({
   const [isSending, setIsSending] = useState(false);
   const [filterStatus, setFilterStatus] = useState<OrderStatus | 'all'>('all');
   const [, setTimerTick] = useState(0);
+  const [medicines, setMedicines] = useState<MedicineVariant[]>([]);
+
+  const [localItems, setLocalItems] = useState<PrescriptionItem[]>([]);
+
+  const [newOrdersIds, setNewOrdersIds] = useState<Set<string>>(new Set());
+  const [preparingOrdersIds, setPreparingOrdersIds] = useState<Set<string>>(new Set());
+
+  // ── Pharmacie de garde ────────────────────────────────────────────────────
+  const [isOnDuty, setIsOnDuty] = useState<boolean>(user.isOnDuty || false);
+  const [dutyNote, setDutyNote] = useState<string>(user.dutyNote || '');
+
+  // ── Horaires d'ouverture ──────────────────────────────────────────────────
+  const [showHoraires, setShowHoraires] = useState(false);
+  const DEFAULT_SCHEDULE: DaySchedule = { closed: false, open: '08:00', close: '20:00' };
+  const CLOSED_SCHEDULE: DaySchedule = { closed: true, open: '08:00', close: '20:00' };
+  const [openingHours, setOpeningHours] = useState<OpeningHours>(user.openingHours || {
+    monday:    { ...DEFAULT_SCHEDULE },
+    tuesday:   { ...DEFAULT_SCHEDULE },
+    wednesday: { ...DEFAULT_SCHEDULE },
+    thursday:  { ...DEFAULT_SCHEDULE },
+    friday:    { ...DEFAULT_SCHEDULE },
+    saturday:  { closed: false, open: '09:00', close: '13:00' },
+    sunday:    { ...CLOSED_SCHEDULE },
+  });
+
+  // ── Notifications push reçues ─────────────────────────────────────────────
+  const [pushNotifications, setPushNotifications] = useState<PushNotification[]>([]);
+  const [showPushBanner, setShowPushBanner] = useState(false);
+  const [latestPush, setLatestPush] = useState<PushNotification | null>(null);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -328,6 +344,129 @@ const PharmacyApp: React.FC<PharmacyAppProps> = ({
     );
   }, [orders, currentPharmacyId]);
 
+  const newOrders = useMemo(() => {
+    return pharmacyOrders.filter(o => 
+      o.status === OrderStatus.AWAITING_QUOTES && 
+      !o.pharmacyId && 
+      o.targetedPharmacyIds?.includes(currentPharmacyId) &&
+      !o.refusedByPharmacyIds?.includes(currentPharmacyId) &&
+      !o.acceptedByPharmacyIds?.includes(currentPharmacyId)
+    );
+  }, [pharmacyOrders, currentPharmacyId]);
+
+  const preparingOrders = useMemo(() => {
+    return pharmacyOrders.filter(o => 
+      o.status === OrderStatus.PREPARING && 
+      o.pharmacyId === currentPharmacyId
+    );
+  }, [pharmacyOrders, currentPharmacyId]);
+
+  useSoundReminder({
+    condition: newOrders.length > 0 && !(newOrdersIds.has(newOrders[0]?.id)),
+    intervalMs: 60000,
+    soundEnabled: true,
+    onStop: () => {
+      setNewOrdersIds(prev => {
+        const newSet = new Set(prev);
+        newOrders.forEach(o => newSet.add(o.id));
+        return newSet;
+      });
+    }
+  });
+
+  useSoundReminder({
+    condition: preparingOrders.length > 0 && !(preparingOrdersIds.has(preparingOrders[0]?.id)),
+    intervalMs: 60000,
+    soundEnabled: true,
+    onStop: () => {
+      setPreparingOrdersIds(prev => {
+        const newSet = new Set(prev);
+        preparingOrders.forEach(o => newSet.add(o.id));
+        return newSet;
+      });
+    }
+  });
+
+  useEffect(() => {
+    setNewOrdersIds(new Set());
+    setPreparingOrdersIds(new Set());
+  }, [currentPharmacyId]);
+
+  // Charger les médicaments depuis Firestore
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, 'medicines'), (snapshot) => {
+      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as MedicineVariant));
+      setMedicines(list);
+    });
+    return unsubscribe;
+  }, []);
+
+  // ── Écouter les notifications push pour cette pharmacie ───────────────────
+  useEffect(() => {
+    if (!user?.uid) return;
+    const q = query(
+      collection(db, 'pushNotifications'),
+      where('targetUid', '==', user.uid),
+      where('read', '==', false)
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      const notifs = snap.docs.map(d => ({ id: d.id, ...d.data() } as PushNotification));
+      if (notifs.length > 0) {
+        setPushNotifications(notifs);
+        setLatestPush(notifs[0]);
+        setShowPushBanner(true);
+        addNotification(notifs[0].title, 'urgent');
+      }
+    });
+    return unsub;
+  }, [user?.uid]);
+
+  // ── Toggle pharmacie de garde ─────────────────────────────────────────────
+  const handleToggleDuty = async () => {
+    const newDuty = !isOnDuty;
+    setIsOnDuty(newDuty);
+    try {
+      await updateDoc(doc(db, 'users', user.uid), {
+        isOnDuty: newDuty,
+        dutyNote: dutyNote,
+      });
+      addNotification(newDuty ? '🌙 Mode garde activé' : '☀️ Mode garde désactivé', 'info');
+    } catch (err) { console.error(err); }
+  };
+
+  // ── Sauvegarder les horaires ──────────────────────────────────────────────
+  const handleSaveHoraires = async () => {
+    try {
+      await updateDoc(doc(db, 'users', user.uid), { openingHours });
+      setShowHoraires(false);
+      addNotification('✅ Horaires sauvegardés', 'info');
+    } catch (err) { console.error(err); }
+  };
+
+  // ── Marquer notification comme lue ───────────────────────────────────────
+  const handleDismissPush = async (notifId: string) => {
+    try {
+      await updateDoc(doc(db, 'pushNotifications', notifId), { read: true });
+      setShowPushBanner(false);
+      setLatestPush(null);
+    } catch (err) { console.error(err); }
+  };
+
+  // ── Calcul ouverture actuelle ─────────────────────────────────────────────
+  const isOpenNow = (): boolean => {
+    const days = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+    const now = new Date();
+    const day = days[now.getDay()] as keyof OpeningHours;
+    const schedule = openingHours[day];
+    if (!schedule || schedule.closed) return false;
+    const [oh, om] = schedule.open.split(':').map(Number);
+    const [ch, cm] = schedule.close.split(':').map(Number);
+    const currentMins = now.getHours() * 60 + now.getMinutes();
+    const openMins = oh * 60 + om;
+    const closeMins = ch * 60 + cm;
+    return currentMins >= openMins && currentMins <= closeMins;
+  };
+
   const filteredOrders = useMemo(() => {
     if (filterStatus === 'all') return pharmacyOrders;
     return pharmacyOrders.filter(o => o.status === filterStatus);
@@ -338,12 +477,21 @@ const PharmacyApp: React.FC<PharmacyAppProps> = ({
   const hasAccepted = currentOrder?.acceptedByPharmacyIds?.includes(currentPharmacyId);
   const sentQuote = currentOrder?.quotes?.find(q => q.pharmacyId === currentPharmacyId);
   
-  const rawSla = useSlaTimer(currentOrder?.deadline);
+  const rawSla = useTimer(currentOrder?.deadline);
   const shouldShowTimer = currentOrder && 
     currentOrder.status === OrderStatus.AWAITING_QUOTES && 
     !currentOrder.pharmacyId && 
     !sentQuote;
   const sla = shouldShowTimer ? rawSla : null;
+
+  useEffect(() => {
+    if (currentOrder) {
+      const items = sentQuote ? sentQuote.items : (drafts[currentOrder.id]?.[currentPharmacyId] || currentOrder.items || []);
+      setLocalItems(items);
+    } else {
+      setLocalItems([]);
+    }
+  }, [currentOrder, drafts, sentQuote, currentPharmacyId]);
 
   const awaitingQuotes = pharmacyOrders.filter(o => o.status === OrderStatus.AWAITING_QUOTES && !o.pharmacyId).length;
   const inPreparation = pharmacyOrders.filter(o => o.status === OrderStatus.PREPARING).length;
@@ -375,19 +523,17 @@ const PharmacyApp: React.FC<PharmacyAppProps> = ({
     });
   };
 
-  const getItems = (order: Order) => {
-    if (sentQuote) return sentQuote.items;
-    return drafts[order.id]?.[currentPharmacyId] || order.items || [];
-  };
-
-  const currentItems = currentOrder ? getItems(currentOrder) : [];
+  const currentItems = localItems;
 
   useEffect(() => {
     setLinesToGenerate(currentItems.length > 0 ? currentItems.length : 1);
   }, [currentOrder?.id, currentItems.length]);
 
   const addItemToDraft = () => {
-    if (!currentOrder) return;
+    if (!currentOrder) {
+      addNotification("Erreur : aucune commande sélectionnée", 'urgent');
+      return;
+    }
     const newItem: PrescriptionItem = { 
       name: '', 
       dosage: '', 
@@ -397,7 +543,10 @@ const PharmacyApp: React.FC<PharmacyAppProps> = ({
       status: 'AVAILABLE', 
       price: 0 
     };
-    onUpdateDraft(currentOrder.id, currentPharmacyId, [...currentItems, newItem]);
+    const newItems = [...currentItems, newItem];
+    setLocalItems(newItems);
+    onUpdateDraft(currentOrder.id, currentPharmacyId, newItems);
+    addNotification("Ligne ajoutée", 'info');
   };
 
   const generateEmptyLines = (count: number) => {
@@ -416,12 +565,27 @@ const PharmacyApp: React.FC<PharmacyAppProps> = ({
       status: 'AVAILABLE' as const,
       price: 0
     }));
+    setLocalItems(newLines);
     onUpdateDraft(currentOrder.id, currentPharmacyId, newLines);
+  };
+
+  const handleItemUpdate = (index: number, updates: Partial<PrescriptionItem>) => {
+    const newItems = [...currentItems];
+    newItems[index] = { ...newItems[index], ...updates };
+    setLocalItems(newItems);
+    onUpdateDraft(currentOrder.id, currentPharmacyId, newItems);
+    setValidationError(null);
+  };
+
+  const handleItemRemove = (index: number) => {
+    const newItems = currentItems.filter((_, i) => i !== index);
+    setLocalItems(newItems);
+    onUpdateDraft(currentOrder.id, currentPharmacyId, newItems);
   };
 
   const sendQuote = async () => {
     if (!currentOrder || isSending) return;
-    const items = getItems(currentOrder);
+    const items = currentItems;
     
     for (const item of items) {
       if (!item.name || item.name.trim() === '') {
@@ -443,68 +607,28 @@ const PharmacyApp: React.FC<PharmacyAppProps> = ({
     setIsSending(true);
     const total = items.reduce((s, i) => i.status !== 'UNAVAILABLE' ? s + ((i.price || 0) * (i.quantity || 1)) : s, 0);
     
-    const allAvailable = items.every(item => item.status === 'AVAILABLE');
-    const pharmacyName = MOCK_PHARMACIES.find(p => p.id === currentPharmacyId)?.name || currentPharmacyId;
+    const pharmacyName = pharmacies.find(p => p.id === currentPharmacyId)?.name
+      || user.pharmacyName
+      || currentPharmacyId;
+    const pharmacyAddress = user.pharmacyAddress || '';
 
-    // Si c'est un mode broadcast ET que tous les produits sont disponibles
-    if (currentOrder.routingMode === 'broadcast' && allAvailable) {
-      try {
-        await runTransaction(db, async (transaction) => {
-          const orderRef = doc(db, 'orders', currentOrder.id);
-          const orderSnap = await transaction.get(orderRef);
-          if (!orderSnap.exists()) throw new Error('Commande introuvable');
-          const order = orderSnap.data() as Order;
-
-          // Vérifier que la commande est toujours disponible (pas déjà attribuée)
-          if (order.status !== OrderStatus.AWAITING_QUOTES || order.pharmacyId) {
-            throw new Error('Cette commande a déjà été prise par une autre pharmacie.');
-          }
-
-          // Mettre à jour la commande : verrouiller et passer en préparation
-          transaction.update(orderRef, {
-            status: OrderStatus.PREPARING,
-            pharmacyId: currentPharmacyId,
-            pharmacyName,
-            totalAmount: total,
-            deliveryFee: 500,
-            items: items,
-            quotes: [...(order.quotes || []), {
-              pharmacyId: currentPharmacyId,
-              pharmacyName,
-              items,
-              totalAmount: total,
-              deliveryFee: 500,
-              estimatedTime: 15
-            }],
-            // Retirer la commande des autres pharmacies
-            targetedPharmacyIds: [],
-          });
-        });
-        setValidationError(null);
-        setSelectedOrderId(null);
-        addNotification('✅ Devis accepté – commande verrouillée', 'info');
-      } catch (error) {
-        console.error('Transaction failed:', error);
-        setValidationError('La commande a déjà été prise par une autre pharmacie.');
-      } finally {
-        setIsSending(false);
-      }
-    } else {
-      // Mode round-robin ou broadcast avec disponibilité partielle : on ajoute simplement le devis
-      onUpdateOrder(currentOrder.id, {
-        quotes: [...(currentOrder.quotes || []), {
-          pharmacyId: currentPharmacyId,
-          pharmacyName,
-          items,
-          totalAmount: total,
-          deliveryFee: 500,
-          estimatedTime: 15
-        }]
-      });
-      setValidationError(null);
-      setSelectedOrderId(null);
-      setIsSending(false);
-    }
+    onUpdateOrder(currentOrder.id, {
+      quotes: [...(currentOrder.quotes || []), {
+        pharmacyId: currentPharmacyId,
+        pharmacyName,
+        pharmacyAddress,
+        items,
+        totalAmount: total,
+        deliveryFee: 500,
+        estimatedTime: 15,
+        isOnDuty,           // ✅ Info garde incluse dans le devis
+        isOpenNow: isOpenNow(), // ✅ Info horaires incluse dans le devis
+      }]
+    });
+    addNotification('📤 Devis envoyé avec succès', 'info');
+    setValidationError(null);
+    setSelectedOrderId(null);
+    setIsSending(false);
   };
 
   const groupedItems = useMemo(() => {
@@ -519,11 +643,13 @@ const PharmacyApp: React.FC<PharmacyAppProps> = ({
   const handleAccept = (orderId: string) => {
     onAcceptOrder(orderId, currentPharmacyId);
     setSelectedOrderId(orderId);
+    setNewOrdersIds(prev => new Set(prev).add(orderId));
   };
 
   const handleRefuse = (orderId: string) => {
     onRefuseOrder(orderId, currentPharmacyId);
     setSelectedOrderId(null);
+    setNewOrdersIds(prev => new Set(prev).add(orderId));
   };
 
   const getActionButton = (order: Order) => {
@@ -579,17 +705,135 @@ const PharmacyApp: React.FC<PharmacyAppProps> = ({
   return (
     <div className="h-full flex flex-col bg-slate-50 overflow-hidden">
       <nav className="bg-white px-6 py-4 border-b flex justify-between items-center shrink-0">
-        <div className="flex gap-2">
-          {MOCK_PHARMACIES.map(p => (
-            <button key={p.id} onClick={() => { onSetCurrentPharmacy(p.id); setSelectedOrderId(null); }} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest ${currentPharmacyId === p.id ? 'bg-slate-900 text-white shadow-lg' : 'bg-slate-100 text-slate-400'}`}>{p.name}</button>
+        <div className="flex gap-2 overflow-x-auto">
+          {pharmacies.map(p => (
+            <button key={p.id} onClick={() => { onSetCurrentPharmacy(p.id); setSelectedOrderId(null); }} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest whitespace-nowrap ${currentPharmacyId === p.id ? 'bg-slate-900 text-white shadow-lg' : 'bg-slate-100 text-slate-400'}`}>
+              {p.name}
+            </button>
           ))}
         </div>
-        <div className="flex items-center gap-4">
-          <button onClick={() => onToggleStatus(currentPharmacyId)} className={`px-4 py-2 rounded-xl text-[10px] font-bold uppercase border-2 flex items-center gap-2 ${isOnline ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 'bg-red-50 text-red-600 border-red-100'}`}>
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Onglets */}
+          <div className="flex bg-slate-100 rounded-xl p-1 gap-1">
+            <button onClick={() => setActiveSection('orders')}
+              className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all flex items-center gap-1.5 ${activeSection === 'orders' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>
+              <i className="fa-solid fa-list-check"></i> Commandes
+            </button>
+            <button onClick={() => setActiveSection('catalogue')}
+              className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all flex items-center gap-1.5 ${activeSection === 'catalogue' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>
+              <i className="fa-solid fa-box"></i> Catalogue
+            </button>
+          </div>
+
+          {/* Horaires */}
+          <button onClick={() => setShowHoraires(true)}
+            className="px-3 py-2 rounded-xl text-[10px] font-black uppercase border-2 border-slate-200 bg-white text-slate-600 hover:bg-slate-50 flex items-center gap-1.5 transition-all">
+            <i className="fa-solid fa-clock"></i>
+            {isOpenNow() ? <span className="text-emerald-600">OUVERT</span> : <span className="text-red-500">FERMÉ</span>}
+          </button>
+
+          {/* Garde */}
+          <button onClick={handleToggleDuty}
+            className={`px-3 py-2 rounded-xl text-[10px] font-black uppercase border-2 flex items-center gap-1.5 transition-all ${
+              isOnDuty ? 'bg-indigo-600 text-white border-indigo-500 shadow-lg' : 'bg-white text-slate-500 border-slate-200 hover:border-indigo-300'
+            }`}>
+            <i className={`fa-solid fa-moon ${isOnDuty ? 'animate-pulse' : ''}`}></i>
+            {isOnDuty ? 'DE GARDE' : 'Garde'}
+          </button>
+
+          {/* Statut en ligne */}
+          <button onClick={() => onToggleStatus(currentPharmacyId)}
+            className={`px-4 py-2 rounded-xl text-[10px] font-bold uppercase border-2 flex items-center gap-2 ${isOnline ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 'bg-red-50 text-red-600 border-red-100'}`}>
             {isOnline ? t.pharmacy.online : t.pharmacy.offline}
           </button>
         </div>
       </nav>
+
+      {/* ── Bandeau notification push urgente ── */}
+      {showPushBanner && latestPush && (
+        <div className="bg-gradient-to-r from-emerald-600 to-teal-600 text-white px-6 py-4 flex items-center justify-between animate-in slide-in-from-top duration-300 shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center shrink-0">
+              <i className="fa-solid fa-bell text-lg animate-bounce"></i>
+            </div>
+            <div>
+              <p className="font-black text-sm">{latestPush.title}</p>
+              <p className="text-emerald-100 text-xs mt-0.5">{latestPush.message}</p>
+            </div>
+          </div>
+          <button onClick={() => handleDismissPush(latestPush.id!)}
+            className="w-8 h-8 bg-white/20 rounded-full flex items-center justify-center hover:bg-white/30 transition-all shrink-0 ml-4">
+            <i className="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+      )}
+
+      {/* ── Modal Horaires d'ouverture ── */}
+      {showHoraires && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden">
+            <div className="bg-slate-900 p-6 flex items-center justify-between">
+              <div>
+                <h2 className="text-white font-black text-lg uppercase tracking-tight">Horaires d'ouverture</h2>
+                <p className="text-slate-400 text-xs mt-0.5">Définissez vos heures pour chaque jour</p>
+              </div>
+              <button onClick={() => setShowHoraires(false)} className="w-8 h-8 bg-white/10 rounded-full flex items-center justify-center text-white hover:bg-white/20">
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </div>
+            <div className="p-6 space-y-3 max-h-[60vh] overflow-y-auto">
+              {(['monday','tuesday','wednesday','thursday','friday','saturday','sunday'] as const).map(day => {
+                const labels: Record<string, string> = {
+                  monday:'Lundi', tuesday:'Mardi', wednesday:'Mercredi',
+                  thursday:'Jeudi', friday:'Vendredi', saturday:'Samedi', sunday:'Dimanche'
+                };
+                const schedule = openingHours[day];
+                return (
+                  <div key={day} className="flex items-center gap-3">
+                    <p className="w-24 text-xs font-black text-slate-700 uppercase shrink-0">{labels[day]}</p>
+                    <label className="flex items-center gap-1.5 shrink-0">
+                      <input type="checkbox" checked={!schedule.closed}
+                        onChange={e => setOpeningHours(prev => ({ ...prev, [day]: { ...prev[day], closed: !e.target.checked } }))}
+                        className="w-4 h-4 accent-emerald-600" />
+                      <span className="text-[10px] font-bold text-slate-500">{schedule.closed ? 'FERMÉ' : 'OUVERT'}</span>
+                    </label>
+                    {!schedule.closed && (
+                      <>
+                        <input type="time" value={schedule.open}
+                          onChange={e => setOpeningHours(prev => ({ ...prev, [day]: { ...prev[day], open: e.target.value } }))}
+                          className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-medium text-slate-800 outline-none focus:border-slate-900" />
+                        <span className="text-slate-400 text-xs font-bold">→</span>
+                        <input type="time" value={schedule.close}
+                          onChange={e => setOpeningHours(prev => ({ ...prev, [day]: { ...prev[day], close: e.target.value } }))}
+                          className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-medium text-slate-800 outline-none focus:border-slate-900" />
+                      </>
+                    )}
+                    {schedule.closed && <div className="flex-1 h-9 bg-slate-100 rounded-xl flex items-center justify-center text-[10px] text-slate-400 font-bold">Fermé ce jour</div>}
+                  </div>
+                );
+              })}
+
+              {/* Note de garde */}
+              <div className="pt-3 border-t border-slate-100">
+                <label className="text-[9px] font-black uppercase text-slate-400 tracking-widest block mb-1.5">Note de garde (optionnel)</label>
+                <input value={dutyNote} onChange={e => setDutyNote(e.target.value)}
+                  placeholder="Ex: Garde de nuit jusqu'à 6h00"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 outline-none focus:border-slate-900" />
+              </div>
+            </div>
+            <div className="p-6 border-t border-slate-100 flex gap-3">
+              <button onClick={() => setShowHoraires(false)}
+                className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl font-black uppercase text-xs tracking-widest transition-all">
+                Annuler
+              </button>
+              <button onClick={handleSaveHoraires}
+                className="flex-1 py-3 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-black uppercase text-xs tracking-widest transition-all">
+                <i className="fa-solid fa-floppy-disk mr-2"></i>Sauvegarder
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto p-6 relative">
         {currentOrder && (
@@ -685,16 +929,9 @@ const PharmacyApp: React.FC<PharmacyAppProps> = ({
                                 disabled={!!sentQuote}
                                 storedPrices={storedPrices}
                                 onPriceSave={handlePriceSave}
-                                onUpdate={u => {
-                                  const newItems = [...currentItems];
-                                  newItems[x.originalIndex] = { ...newItems[x.originalIndex], ...u };
-                                  onUpdateDraft(currentOrder.id, currentPharmacyId, newItems);
-                                  setValidationError(null);
-                                }}
-                                onRemove={() => {
-                                  const newItems = currentItems.filter((_, i) => i !== x.originalIndex);
-                                  onUpdateDraft(currentOrder.id, currentPharmacyId, newItems);
-                                }}
+                                onUpdate={(u) => handleItemUpdate(x.originalIndex, u)}
+                                onRemove={() => handleItemRemove(x.originalIndex)}
+                                medicines={medicines}
                               />
                             ))}
                           </div>
@@ -710,16 +947,9 @@ const PharmacyApp: React.FC<PharmacyAppProps> = ({
                                 disabled={!!sentQuote}
                                 storedPrices={storedPrices}
                                 onPriceSave={handlePriceSave}
-                                onUpdate={u => {
-                                  const newItems = [...currentItems];
-                                  newItems[x.originalIndex] = { ...newItems[x.originalIndex], ...u };
-                                  onUpdateDraft(currentOrder.id, currentPharmacyId, newItems);
-                                  setValidationError(null);
-                                }}
-                                onRemove={() => {
-                                  const newItems = currentItems.filter((_, i) => i !== x.originalIndex);
-                                  onUpdateDraft(currentOrder.id, currentPharmacyId, newItems);
-                                }}
+                                onUpdate={(u) => handleItemUpdate(x.originalIndex, u)}
+                                onRemove={() => handleItemRemove(x.originalIndex)}
+                                medicines={medicines}
                               />
                             ))}
                           </div>
@@ -735,16 +965,9 @@ const PharmacyApp: React.FC<PharmacyAppProps> = ({
                                 disabled={!!sentQuote}
                                 storedPrices={storedPrices}
                                 onPriceSave={handlePriceSave}
-                                onUpdate={u => {
-                                  const newItems = [...currentItems];
-                                  newItems[x.originalIndex] = { ...newItems[x.originalIndex], ...u };
-                                  onUpdateDraft(currentOrder.id, currentPharmacyId, newItems);
-                                  setValidationError(null);
-                                }}
-                                onRemove={() => {
-                                  const newItems = currentItems.filter((_, i) => i !== x.originalIndex);
-                                  onUpdateDraft(currentOrder.id, currentPharmacyId, newItems);
-                                }}
+                                onUpdate={(u) => handleItemUpdate(x.originalIndex, u)}
+                                onRemove={() => handleItemRemove(x.originalIndex)}
+                                medicines={medicines}
                               />
                             ))}
                           </div>
@@ -897,6 +1120,7 @@ const PharmacyApp: React.FC<PharmacyAppProps> = ({
               <table className="w-full text-left">
                 <thead>
                   <tr className="text-[8px] font-black uppercase text-slate-400 border-b border-slate-100">
+                    <th className="pb-4">N°</th>
                     <th className="pb-4">Patient</th>
                     <th className="pb-4">Produits</th>
                     <th className="pb-4">Distance</th>
@@ -911,7 +1135,7 @@ const PharmacyApp: React.FC<PharmacyAppProps> = ({
                     const now = new Date();
                     const isExpired = deadline && deadline < now;
                     const productCount = order.items?.length || order.quotes?.[0]?.items?.length || 0;
-                    const pharmacy = order.targetedPharmacyIds?.[0] ? MOCK_PHARMACIES.find(p => p.id === order.targetedPharmacyIds[0]) : null;
+                    const pharmacy = order.targetedPharmacyIds?.[0] ? pharmacies.find(p => p.id === order.targetedPharmacyIds[0]) : null;
                     const distance = pharmacy ? pharmacy.distance.toFixed(1) + ' km' : '—';
 
                     let statusText = '';
@@ -924,6 +1148,7 @@ const PharmacyApp: React.FC<PharmacyAppProps> = ({
 
                     return (
                       <tr key={order.id} onClick={() => setSelectedOrderId(order.id)} className="hover:bg-slate-50/50 transition-colors cursor-pointer">
+                        <td className="py-4 text-xs font-black text-blue-400">#{order.id.slice(-6)}</td>
                         <td className="py-4 text-sm font-black text-slate-900">{order.patientName}</td>
                         <td className="py-4 text-xs font-bold text-slate-600">{productCount} Produits</td>
                         <td className="py-4 text-xs text-slate-500">{distance}</td>
@@ -963,7 +1188,7 @@ const PharmacyApp: React.FC<PharmacyAppProps> = ({
                   })}
                   {filteredOrders.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="py-8 text-center text-slate-400 text-sm italic">Aucune commande</td>
+                      <td colSpan={7} className="py-8 text-center text-slate-400 text-sm italic">Aucune commande</td>
                     </tr>
                   )}
                 </tbody>

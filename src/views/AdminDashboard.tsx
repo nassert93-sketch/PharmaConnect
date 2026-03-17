@@ -1,7 +1,8 @@
-import React, { useMemo, useState } from 'react';
-import { Order, OrderStatus, PaymentMethod, UserProfile, UserStatus, UserRole } from '@/types';
+import React, { useMemo, useState, useEffect } from 'react';
+import AdminUserManager from './AdminUserManager';
+import { Order, OrderStatus, PaymentMethod, UserProfile, UserStatus, UserRole, RoutingConfig } from '@/types';
 import { MOCK_PHARMACIES } from '@/mockData';
-import { doc, updateDoc } from 'firebase/firestore';
+import { doc, updateDoc, setDoc, collection, writeBatch, getDocs } from 'firebase/firestore';
 import { db } from '@/firebase';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
@@ -31,6 +32,8 @@ interface AdminDashboardProps {
   onUpdatePaymentMethods: (methods: PaymentMethod[]) => void;
   users: UserProfile[];
   onSwitchRole?: (role: UserRole) => void;
+  routingConfig: RoutingConfig;
+  onUpdateRoutingConfig: (config: RoutingConfig) => Promise<void>;
 }
 
 const Card = ({ title, children, className = "" }: { title: string, children: React.ReactNode, className?: string }) => (
@@ -66,9 +69,30 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
   paymentMethods,
   onUpdatePaymentMethods,
   users,
-  onSwitchRole
+  onSwitchRole,
+  routingConfig,
+  onUpdateRoutingConfig
 }) => {
   const [activeTab, setActiveTab] = useState<'analytics' | 'pharmacies' | 'drivers' | 'gallery' | 'settings' | 'campaigns' | 'loyalty' | 'notifications' | 'orders' | 'payments' | 'users'>('analytics');
+  const [importStatus, setImportStatus] = useState<'idle' | 'importing' | 'done' | 'error'>('idle');
+  const [showAddMedicine, setShowAddMedicine] = useState(false);
+  const [newMedName, setNewMedName]       = useState('');
+  const [newMedDosage, setNewMedDosage]   = useState('');
+  const [newMedForme, setNewMedForme]     = useState('comprimé');
+  const [newMedLabo, setNewMedLabo]       = useState('');
+  const [newMedPsycho, setNewMedPsycho]   = useState(false);
+  const [newMedCold, setNewMedCold]       = useState(false);
+  const [addMedLoading, setAddMedLoading] = useState(false);
+  const [importProgress, setImportProgress] = useState(0);
+  const [importTotal, setImportTotal] = useState(0);
+  const [medicinesCount, setMedicinesCount] = useState<number | null>(null);
+
+  console.log("📦 Props reçues dans AdminDashboard:", {
+    routingConfig,
+    onUpdateRoutingConfig: !!onUpdateRoutingConfig,
+    orders: orders?.length,
+    users: users?.length,
+  });
 
   const handleUpdateUserStatus = async (uid: string, status: UserStatus) => {
     try {
@@ -77,6 +101,92 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       console.error('Error updating user status:', error);
       alert('Erreur lors de la mise à jour du statut');
     }
+  };
+
+  // ── Import base médicaments BDPM ──────────────────────────────────────────
+  const handleCheckMedicines = async () => {
+    try {
+      const snap = await getDocs(collection(db, 'medicines'));
+      setMedicinesCount(snap.size);
+    } catch (err) { console.error(err); }
+  };
+
+  const handleImportMedicines = async () => {
+    if (!window.confirm(`Importer ${MEDICINES_DATA.length.toLocaleString()} médicaments dans Firestore ?\nCette opération peut prendre 2-3 minutes.`)) return;
+    setImportStatus('importing');
+    setImportProgress(0);
+    setImportTotal(MEDICINES_DATA.length);
+    try {
+      const BATCH_SIZE = 500;
+      let imported = 0;
+      for (let i = 0; i < MEDICINES_DATA.length; i += BATCH_SIZE) {
+        const batch = writeBatch(db);
+        const chunk = MEDICINES_DATA.slice(i, i + BATCH_SIZE);
+        chunk.forEach((medicine: any) => {
+          const ref = doc(collection(db, 'medicines'), medicine.id);
+          batch.set(ref, medicine);
+        });
+        await batch.commit();
+        imported += chunk.length;
+        setImportProgress(imported);
+        await new Promise(r => setTimeout(r, 80));
+      }
+      setImportStatus('done');
+      setMedicinesCount(imported);
+    } catch (err) {
+      console.error('Import error:', err);
+      setImportStatus('error');
+    }
+  };
+
+  const handleAddMedicine = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newMedName.trim()) return;
+    setAddMedLoading(true);
+    try {
+      const id = `med-custom-${Date.now()}`;
+      await setDoc(doc(db, 'medicines', id), {
+        id,
+        cis: '',
+        baseName: newMedName.trim(),
+        dosage: newMedDosage.trim(),
+        forme: newMedForme,
+        laboratoire: newMedLabo.trim(),
+        isPsychotropic: newMedPsycho,
+        isColdChain: newMedCold,
+        remboursable: false,
+        tauxRemboursement: '',
+        defaultPrice: 0,
+        dci: '',
+        cip13: '',
+        conditionnement: '',
+        source: 'admin-manual',
+        createdAt: new Date().toISOString(),
+      });
+      setNewMedName(''); setNewMedDosage(''); setNewMedForme('comprimé');
+      setNewMedLabo(''); setNewMedPsycho(false); setNewMedCold(false);
+      setShowAddMedicine(false);
+      if (medicinesCount !== null) setMedicinesCount(medicinesCount + 1);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setAddMedLoading(false);
+    }
+  };
+
+  const handleClearMedicines = async () => {
+    if (!window.confirm('Supprimer TOUS les médicaments de Firestore ?')) return;
+    try {
+      const snap = await getDocs(collection(db, 'medicines'));
+      const BATCH_SIZE = 500;
+      for (let i = 0; i < snap.docs.length; i += BATCH_SIZE) {
+        const batch = writeBatch(db);
+        snap.docs.slice(i, i + BATCH_SIZE).forEach(d => batch.delete(d.ref));
+        await batch.commit();
+      }
+      setMedicinesCount(0);
+      setImportStatus('idle');
+    } catch (err) { console.error(err); }
   };
 
   const pendingUsers = users.filter(u => u.status === UserStatus.PENDING);
@@ -150,17 +260,14 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     djfValue: 500
   });
 
-  // États pour la gestion des moyens de paiement (avec logo et type)
   const [newPaymentMethod, setNewPaymentMethod] = useState({ name: '', icon: '', code: '', logo: '', type: 'online' as 'online' | 'cod' });
   const [editingMethodId, setEditingMethodId] = useState<string | null>(null);
   const [editMethodData, setEditMethodData] = useState({ name: '', icon: '', code: '', active: true, logo: '', type: 'online' as 'online' | 'cod' });
 
-  // Calcul des statistiques de paiement par méthode
   const paymentStats = useMemo(() => {
     const ordersWithPayment = orders.filter(o => o.paymentMethod && (o.paymentType || paymentMethods.find(p => p.code === o.paymentMethod)?.type));
     const total = ordersWithPayment.length;
     
-    // Par méthode de paiement
     const methodStats = paymentMethods.map(method => {
       const ordersOfMethod = ordersWithPayment.filter(o => o.paymentMethod === method.code);
       const count = ordersOfMethod.length;
@@ -172,22 +279,19 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
         totalAmount,
         percent: Math.round(percent * 10) / 10
       };
-    }).filter(m => m.count > 0); // ne garder que ceux utilisés
+    }).filter(m => m.count > 0);
 
-    // Total par type (online / cod)
     const onlineCount = methodStats.filter(m => m.type === 'online').reduce((acc, m) => acc + m.count, 0);
     const codCount = methodStats.filter(m => m.type === 'cod').reduce((acc, m) => acc + m.count, 0);
     const onlinePercent = total ? (onlineCount / total) * 100 : 0;
     const codPercent = total ? (codCount / total) * 100 : 0;
 
-    // Données pour le graphique en camembert (répartition par méthode)
     const pieData = methodStats.map(m => ({
       name: m.name,
       value: m.count,
       percent: m.percent
     }));
 
-    // Données pour le graphique en barres (montants par méthode)
     const barData = methodStats.map(m => ({
       name: m.name,
       montant: m.totalAmount,
@@ -311,7 +415,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     alert('Configuration fidélité sauvegardée');
   };
 
-  // Gestion des moyens de paiement avec logo
   const addPaymentMethod = () => {
     if (!newPaymentMethod.name || !newPaymentMethod.icon || !newPaymentMethod.code) return;
     const newMethod: PaymentMethod = {
@@ -404,8 +507,9 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <i className="fa-solid fa-tower-observation"></i>
             </div>
             <div>
-              <h2 className="text-3xl font-black uppercase tracking-tighter leading-none">{t.admin.title}</h2>
-              <p className="text-blue-400 font-bold uppercase text-[10px] tracking-[0.4em] mt-2 italic">{t.admin.subtitle}</p>
+              {/* CORRIGÉ : suppression de uppercase pour "PharmaConnect Admin" */}
+              <h2 className="text-3xl font-black tracking-tighter leading-none">PharmaConnect Admin</h2>
+              <p className="text-blue-400 font-bold uppercase text-[10px] tracking-[0.4em] mt-2 italic">Hub National Djibouti</p>
             </div>
           </div>
 
@@ -438,106 +542,12 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       </header>
 
-      {/* Onglet Users (Gestion des approbations) */}
+      {/* Onglet Users */}
       {activeTab === 'users' && (
-        <div className="space-y-8 animate-in fade-in duration-500">
-          <Card title="Approbations en attente">
-            <div className="space-y-4">
-              {pendingUsers.length > 0 ? (
-                pendingUsers.map(u => (
-                  <div key={u.uid} className="flex items-center justify-between p-6 bg-slate-900 rounded-3xl border border-slate-800">
-                    <div className="flex items-center gap-4">
-                      {u.photoURL ? (
-                        <img src={u.photoURL} className="w-12 h-12 rounded-xl object-cover" alt={u.name} />
-                      ) : (
-                        <div className="w-12 h-12 bg-slate-800 rounded-xl flex items-center justify-center text-slate-500">
-                          <i className="fa-solid fa-user"></i>
-                        </div>
-                      )}
-                      <div>
-                        <p className="text-sm font-black uppercase">{u.name}</p>
-                        <p className="text-[10px] text-blue-400 font-bold uppercase tracking-widest">
-                          {u.role} 
-                          {u.pharmacyName && ` • ${u.pharmacyName}`}
-                          {u.vehicleType && ` • ${u.vehicleType} (${u.vehiclePlate})`}
-                          {` • ${u.email}`}
-                        </p>
-                        <p className="text-[9px] text-slate-500 mt-1">{u.phone}</p>
-                      </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <button 
-                        onClick={() => handleUpdateUserStatus(u.uid, UserStatus.APPROVED)}
-                        className="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-[10px] font-black uppercase transition-all"
-                      >
-                        Approuver
-                      </button>
-                      <button 
-                        onClick={() => handleUpdateUserStatus(u.uid, UserStatus.REJECTED)}
-                        className="px-6 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-[10px] font-black uppercase transition-all"
-                      >
-                        Refuser
-                      </button>
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <p className="text-center py-10 text-slate-500 text-xs font-black uppercase italic">Aucune demande en attente</p>
-              )}
-            </div>
-          </Card>
-
-          <Card title="Utilisateurs Approuvés">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left">
-                <thead>
-                  <tr className="border-b border-slate-600 text-[8px] font-black uppercase text-slate-300 tracking-[0.2em]">
-                    <th className="pb-4">Utilisateur</th>
-                    <th className="pb-4">Rôle</th>
-                    <th className="pb-4">Email</th>
-                    <th className="pb-4">Status</th>
-                    <th className="pb-4">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-700">
-                  {approvedUsers.map(u => (
-                    <tr key={u.uid} className="hover:bg-slate-800/30 transition-colors">
-                      <td className="py-4">
-                        <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 bg-slate-800 rounded-lg flex items-center justify-center text-slate-500">
-                            <i className={`fa-solid ${u.role === UserRole.PHARMACY ? 'fa-hospital' : u.role === UserRole.DRIVER ? 'fa-motorcycle' : 'fa-user'} text-[10px]`}></i>
-                          </div>
-                          <div>
-                            <p className="text-xs font-black text-white">{u.name}</p>
-                            {u.pharmacyName && <p className="text-[8px] text-slate-500 font-bold uppercase">{u.pharmacyName}</p>}
-                            {u.vehicleType && <p className="text-[8px] text-slate-500 font-bold uppercase">{u.vehicleType} - {u.vehiclePlate}</p>}
-                          </div>
-                        </div>
-                      </td>
-                      <td className="py-4 text-[10px] font-black text-blue-400 uppercase">{u.role}</td>
-                      <td className="py-4 text-xs text-slate-300">{u.email}</td>
-                      <td className="py-4">
-                        <span className="text-[8px] font-black px-2 py-1 bg-emerald-500/20 text-emerald-400 rounded uppercase">Actif</span>
-                      </td>
-                      <td className="py-4">
-                        <button 
-                          onClick={() => handleUpdateUserStatus(u.uid, UserStatus.REJECTED)}
-                          className="text-[9px] font-black text-red-400 hover:text-red-300 uppercase"
-                        >
-                          Désactiver
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Card>
-        </div>
+        <AdminUserManager users={users} />
       )}
 
-      {/* Onglet Analytics */}
-      {activeTab === 'analytics' && (
+            {activeTab === 'analytics' && (
         <div className="space-y-8 animate-in fade-in duration-500">
           {onSwitchRole && (
             <Card title="Accès Rapide aux Modules">
@@ -606,7 +616,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
-      {/* Onglet Orders (Suivi commandes) */}
+      {/* Onglet Orders */}
       {activeTab === 'orders' && (
         <Card title="Suivi des commandes" className="animate-in fade-in duration-500">
           <div className="overflow-x-auto">
@@ -735,7 +745,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
-      {/* Onglet Payments - Statistiques détaillées */}
+      {/* Onglet Payments */}
       {activeTab === 'payments' && (
         <div className="space-y-8 animate-in fade-in duration-500">
           <Card title="Statistiques globales des paiements">
@@ -755,7 +765,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-              {/* Camembert répartition par méthode */}
               <div className="bg-slate-800 p-6 rounded-2xl border border-slate-700">
                 <h3 className="text-sm font-black uppercase text-white mb-4">Répartition par méthode de paiement</h3>
                 {paymentStats.pieData.length > 0 ? (
@@ -783,7 +792,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 )}
               </div>
 
-              {/* Barres montants par méthode */}
               <div className="bg-slate-800 p-6 rounded-2xl border border-slate-700">
                 <h3 className="text-sm font-black uppercase text-white mb-4">Montants totaux par méthode</h3>
                 {paymentStats.barData.length > 0 ? (
@@ -802,7 +810,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </div>
             </div>
 
-            {/* Tableau détaillé par méthode */}
             <div className="mt-8">
               <h3 className="text-sm font-black uppercase text-white mb-4">Détail par méthode de paiement</h3>
               <div className="overflow-x-auto">
@@ -850,7 +857,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
-      {/* Onglet Settings (paramètres généraux et gestion des méthodes de paiement) */}
+      {/* Onglet Settings */}
       {activeTab === 'settings' && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 animate-in slide-in-from-bottom-4">
           <Card title="Feature Flags (Activation Fonctions)">
@@ -912,6 +919,218 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <span className="text-[10px] text-slate-400">minutes (actuellement {slaMinutes} min)</span>
               </div>
               <p className="text-[9px] text-slate-500 italic">Ce délai correspond au temps accordé aux pharmacies pour répondre à une commande avant transfert automatique.</p>
+            </div>
+          </Card>
+
+          {/* Carte de routage (conditionnelle) */}
+          {routingConfig && (
+            <Card title="Configuration du routage des commandes" className="lg:col-span-2">
+              <div className="space-y-4">
+                <div className="flex items-center gap-4">
+                  <label className="text-[10px] font-black uppercase text-slate-400 w-48">Mode d'envoi</label>
+                  <div className="flex gap-4">
+                    <button
+                      onClick={() => onUpdateRoutingConfig({ ...routingConfig, mode: 'round-robin' })}
+                      className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${
+                        routingConfig.mode === 'round-robin' 
+                          ? 'bg-blue-600 text-white' 
+                          : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                      }`}
+                    >
+                      Round-robin (une par une)
+                    </button>
+                    <button
+                      onClick={() => onUpdateRoutingConfig({ ...routingConfig, mode: 'broadcast' })}
+                      className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${
+                        routingConfig.mode === 'broadcast' 
+                          ? 'bg-blue-600 text-white' 
+                          : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                      }`}
+                    >
+                      Broadcast (simultané)
+                    </button>
+                  </div>
+                </div>
+                {routingConfig.mode === 'broadcast' && (
+                  <div className="flex items-center gap-4">
+                    <label className="text-[10px] font-black uppercase text-slate-400 w-48">Nombre de pharmacies</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="10"
+                      value={routingConfig.broadcastCount}
+                      onChange={(e) => onUpdateRoutingConfig({ 
+                        ...routingConfig, 
+                        broadcastCount: parseInt(e.target.value) || 1 
+                      })}
+                      className="w-24 bg-slate-800 border-2 border-slate-700 rounded-xl p-3 text-xs font-black text-white outline-none focus:border-blue-600"
+                    />
+                  </div>
+                )}
+                <p className="text-[9px] text-slate-500 italic">
+                  En mode broadcast, l'ordre est envoyé simultanément à N pharmacies. La première qui confirme la disponibilité totale de tous les produits remporte la commande.
+                </p>
+              </div>
+            </Card>
+          )}
+
+          {/* ── Carte Base Médicaments ── */}
+          <Card title="Base de données médicaments" className="lg:col-span-2">
+            <div className="space-y-6">
+              {/* Stats */}
+              <div className="grid grid-cols-3 gap-4">
+                <div className="bg-slate-800 rounded-2xl p-4 text-center">
+                  <p className="text-3xl font-black text-white">15 816</p>
+                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-1">Médicaments BDPM</p>
+                </div>
+                <div className="bg-slate-800 rounded-2xl p-4 text-center">
+                  <p className="text-3xl font-black text-emerald-400">
+                    {medicinesCount === null ? '—' : medicinesCount.toLocaleString()}
+                  </p>
+                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-1">Dans Firestore</p>
+                </div>
+                <div className="bg-slate-800 rounded-2xl p-4 text-center">
+                  <p className="text-3xl font-black text-amber-400">297</p>
+                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-1">Psychotropes</p>
+                </div>
+              </div>
+
+              {/* Barre de progression */}
+              {importStatus === 'importing' && (
+                <div className="space-y-2">
+                  <div className="flex justify-between text-xs font-black text-slate-400">
+                    <span>Import en cours...</span>
+                    <span>{importProgress.toLocaleString()} / {importTotal.toLocaleString()}</span>
+                  </div>
+                  <div className="w-full bg-slate-700 rounded-full h-3">
+                    <div
+                      className="h-3 rounded-full transition-all duration-300"
+                      style={{
+                        width: `${Math.round((importProgress / importTotal) * 100)}%`,
+                        background: 'linear-gradient(90deg, #1a6fd4, #4caf50)'
+                      }}
+                    ></div>
+                  </div>
+                  <p className="text-[9px] text-slate-500 text-center">
+                    {Math.round((importProgress / importTotal) * 100)}% — Ne fermez pas cette page
+                  </p>
+                </div>
+              )}
+
+              {/* Messages statut */}
+              {importStatus === 'done' && (
+                <div className="bg-emerald-900/30 border border-emerald-700 rounded-xl p-4 flex items-center gap-3">
+                  <i className="fa-solid fa-circle-check text-emerald-400 text-xl"></i>
+                  <div>
+                    <p className="text-emerald-300 font-black text-sm">Import terminé avec succès !</p>
+                    <p className="text-emerald-500 text-xs">{medicinesCount?.toLocaleString()} médicaments disponibles pour les pharmacies</p>
+                  </div>
+                </div>
+              )}
+              {importStatus === 'error' && (
+                <div className="bg-red-900/30 border border-red-700 rounded-xl p-4 flex items-center gap-3">
+                  <i className="fa-solid fa-circle-exclamation text-red-400 text-xl"></i>
+                  <p className="text-red-300 font-black text-sm">Erreur lors de l'import. Réessayez.</p>
+                </div>
+              )}
+
+              {/* Boutons d'action */}
+              <div className="flex flex-wrap gap-3">
+                <button
+                  onClick={handleCheckMedicines}
+                  className="flex items-center gap-2 px-4 py-2.5 bg-slate-700 hover:bg-slate-600 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-all"
+                >
+                  <i className="fa-solid fa-magnifying-glass"></i>
+                  Vérifier Firestore
+                </button>
+                <button
+                  onClick={handleImportMedicines}
+                  disabled={importStatus === 'importing'}
+                  className="flex items-center gap-2 px-6 py-2.5 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-all disabled:opacity-50"
+                  style={{background: 'linear-gradient(135deg, #1a6fd4, #4caf50)'}}
+                >
+                  {importStatus === 'importing'
+                    ? <><i className="fa-solid fa-circle-notch fa-spin"></i> Import en cours...</>
+                    : <><i className="fa-solid fa-cloud-arrow-up"></i> Importer 15 816 médicaments</>
+                  }
+                </button>
+                <button
+                  onClick={() => setShowAddMedicine(!showAddMedicine)}
+                  className="flex items-center gap-2 px-4 py-2.5 bg-blue-600/20 hover:bg-blue-600 text-blue-400 hover:text-white rounded-xl text-xs font-black uppercase tracking-wider transition-all"
+                >
+                  <i className="fa-solid fa-plus"></i>
+                  Ajouter manuellement
+                </button>
+                <button
+                  onClick={handleClearMedicines}
+                  disabled={importStatus === 'importing'}
+                  className="flex items-center gap-2 px-4 py-2.5 bg-red-900/40 hover:bg-red-800 text-red-400 hover:text-white rounded-xl text-xs font-black uppercase tracking-wider transition-all disabled:opacity-50"
+                >
+                  <i className="fa-solid fa-trash"></i>
+                  Vider la base
+                </button>
+              </div>
+
+              {/* Formulaire ajout manuel */}
+              {showAddMedicine && (
+                <form onSubmit={handleAddMedicine} className="bg-slate-900/50 rounded-2xl border border-slate-700 p-5 space-y-4">
+                  <p className="text-xs font-black uppercase text-slate-300 tracking-widest">➕ Ajouter un médicament manuellement</p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="md:col-span-2">
+                      <label className="text-[9px] font-black uppercase text-slate-500 block mb-1">Nom *</label>
+                      <input required value={newMedName} onChange={e => setNewMedName(e.target.value)}
+                        placeholder="Ex: PARACETAMOL DJIB 500mg"
+                        className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-blue-500" />
+                    </div>
+                    <div>
+                      <label className="text-[9px] font-black uppercase text-slate-500 block mb-1">Dosage</label>
+                      <input value={newMedDosage} onChange={e => setNewMedDosage(e.target.value)}
+                        placeholder="500mg"
+                        className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-blue-500" />
+                    </div>
+                    <div>
+                      <label className="text-[9px] font-black uppercase text-slate-500 block mb-1">Forme</label>
+                      <select value={newMedForme} onChange={e => setNewMedForme(e.target.value)}
+                        className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white outline-none focus:border-blue-500">
+                        {['comprimé','gélule','sirop','injectable','pommade','crème','suppositoire','spray','sachet','autre'].map(f =>
+                          <option key={f} value={f}>{f}</option>
+                        )}
+                      </select>
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className="text-[9px] font-black uppercase text-slate-500 block mb-1">Laboratoire</label>
+                      <input value={newMedLabo} onChange={e => setNewMedLabo(e.target.value)}
+                        placeholder="Ex: Laboratoire Djibouti"
+                        className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-blue-500" />
+                    </div>
+                  </div>
+                  <div className="flex gap-4">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" checked={newMedPsycho} onChange={e => setNewMedPsycho(e.target.checked)} className="w-4 h-4 accent-red-500" />
+                      <span className="text-xs font-bold text-slate-300">🧪 Psychotrope</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" checked={newMedCold} onChange={e => setNewMedCold(e.target.checked)} className="w-4 h-4 accent-blue-500" />
+                      <span className="text-xs font-bold text-slate-300">❄️ Chaîne du froid</span>
+                    </label>
+                  </div>
+                  <div className="flex gap-3">
+                    <button type="button" onClick={() => setShowAddMedicine(false)}
+                      className="flex-1 py-2.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-xl text-xs font-black uppercase tracking-wider transition-all">
+                      Annuler
+                    </button>
+                    <button type="submit" disabled={addMedLoading}
+                      className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-all disabled:opacity-50">
+                      {addMedLoading ? <i className="fa-solid fa-circle-notch fa-spin"></i> : 'Ajouter'}
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              <p className="text-[9px] text-slate-500 italic">
+                Source : Base de données publique des médicaments (BDPM) — Mise à jour Mars 2026.
+                L'import se fait en batches de 500 pour respecter les limites Firestore.
+              </p>
             </div>
           </Card>
 
@@ -1109,13 +1328,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </div>
           </Card>
 
-          {/* Section Méthodes de paiement avec logo et type */}
           <Card title="Moyens de paiement acceptés" className="lg:col-span-2 mt-8">
             <div className="space-y-4">
               {paymentMethods.map(method => (
                 <div key={method.id} className="flex items-center justify-between p-4 bg-slate-800 rounded-2xl border border-slate-700">
                   {editingMethodId === method.id ? (
-                    // Mode édition
                     <div className="flex-1 grid grid-cols-6 gap-2">
                       <input
                         type="text"
@@ -1163,7 +1380,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       </div>
                     </div>
                   ) : (
-                    // Affichage normal
                     <>
                       <div className="flex items-center gap-4">
                         {method.logo ? (
@@ -1195,7 +1411,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
               ))}
 
-              {/* Formulaire d'ajout avec logo et type */}
               <div className="mt-6 p-4 bg-slate-800 rounded-2xl border border-slate-700">
                 <h5 className="text-[10px] font-black uppercase text-slate-200 mb-4">Ajouter une méthode de paiement</h5>
                 <div className="grid grid-cols-5 gap-4">

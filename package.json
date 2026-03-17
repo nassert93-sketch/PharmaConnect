@@ -7,12 +7,19 @@
     "dev": "vite",
     "lint": "tsc --noEmit",
     "build": "vite build",
+    "build:patient": "vite build --mode patient",
+    "build:pharmacy": "vite build --mode pharmacy",
+    "build:driver": "vite build --mode driver",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@capacitor/android": "^7.2.0",
+    "@capacitor/cli": "^7.6.0",
+    "@capacitor/core": "^7.6.0",
     "@google/genai": "1.40.0",
     "@tailwindcss/vite": "^4.2.1",
     "firebase": "^12.9.0",
+    "leaflet": "^1.9.4",
     "react": "19.0.0",
     "react-dom": "19.0.0",
     "react-router-dom": "6.22.0",
@@ -20,6 +27,7 @@
     "tailwindcss": "^4.2.1"
   },
   "devDependencies": {
+    "@types/leaflet": "^1.9.21",
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.0",
     "typescript": "~5.8.2",

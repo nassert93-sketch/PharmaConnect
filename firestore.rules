@@ -1,0 +1,64 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Fonctions d'aide
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    function isAdmin() {
+      return isAuthenticated() && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'ADMIN';
+    }
+    function isOwner(userId) {
+      return request.auth.uid == userId;
+    }
+    function isTargetedPharmacy(order) {
+      return request.auth.uid in order.targetedPharmacyIds;
+    }
+    function isAssignedDriver(order) {
+      return order.driverId == request.auth.uid;
+    }
+
+    // Utilisateurs
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && (isOwner(userId) || isAdmin());
+    }
+
+    // Commandes
+    match /orders/{orderId} {
+      allow read: if isAuthenticated() && (
+        isOwner(resource.data.patientId) ||
+        isTargetedPharmacy(resource.data) ||
+        isAssignedDriver(resource.data) ||
+        isAdmin()
+      );
+      allow create: if isAuthenticated() && isOwner(request.resource.data.patientId);
+      allow update: if isAuthenticated() && (
+        isOwner(resource.data.patientId) ||    // patient peut accepter/payer
+        (isTargetedPharmacy(resource.data) &&  // pharmacie peut modifier certains champs
+          request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['quotes', 'acceptedByPharmacyIds', 'refusedByPharmacyIds', 'pharmacyId', 'pharmacyName', 'status'])) ||
+        (isAssignedDriver(resource.data) &&     // livreur peut modifier statut et position
+          request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['status', 'driverLocation'])) ||
+        isAdmin()
+      ));
+      allow delete: if isAdmin();
+    }
+
+    // Brouillons (pharmacyDrafts)
+    match /pharmacyDrafts/{draftId} {
+      allow read, write: if isAuthenticated() && (
+        isAdmin() ||
+        request.auth.uid == resource.data.pharmacyId
+      );
+    }
+
+    // Configuration (config)
+    match /config/{document} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+  }
+}

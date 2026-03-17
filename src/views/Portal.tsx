@@ -47,7 +47,7 @@ const Portal: React.FC<PortalProps> = ({ onSelectApp }) => {
         <div className="w-20 h-20 bg-blue-600 text-white rounded-3xl flex items-center justify-center mx-auto mb-6 shadow-xl shadow-blue-100">
           <i className="fa-solid fa-staff-snake text-4xl"></i>
         </div>
-        <h1 className="text-4xl font-black text-slate-900 uppercase tracking-tighter">PharmaConnect Hub</h1>
+        <h1 className="text-4xl font-black text-slate-900 tracking-tighter">PharmaConnect Hub</h1>
         <p className="text-slate-500 font-bold uppercase text-xs tracking-[0.3em] mt-2 italic">Choisissez votre application</p>
       </div>
 
